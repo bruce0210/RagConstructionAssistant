@@ -1,0 +1,23 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*.so
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Virtual environment
+.env
+.venv/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# FAISS index and local embeddings
+data/embeddings/
+data/faiss_index/
+data/processed/
+
+# Logs
+*.log
