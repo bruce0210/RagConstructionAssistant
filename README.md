@@ -19,3 +19,9 @@ A semantic knowledge retrieval system for the construction industry, combining:
 ```bash
 conda activate rag_construction_assistant
 python run_pipeline.py
+
+## 🧠 Author
+
+**Bruce Yin**
+PolyU MSc in Information Systems
+GitHub: [@bruce0210](https://github.com/bruce0210)
