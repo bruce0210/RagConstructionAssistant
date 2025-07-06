@@ -31,7 +31,7 @@ with st.sidebar:
     st.slider("Temperature", 0.0, 1.0, 0.7, step=0.01, key="temperature")
     st.slider("Top-K Retrieved Chunks", 1, 10, 5, step=1, key="top_k")
     st.markdown("---")
-    st.caption("🏗️ Ask questions about building specifications, engineering standards or any construction engineering regulations.")
+    st.caption("🏗️  Ask questions about building specifications, engineering standards or any construction engineering regulations.")
     # st.markdown(
     #     "[![Open in GitHub](https://github.com/codespaces/badge.svg)]"
     #     "(https://github.com/bruce0210/rag_construction_assistant)"
