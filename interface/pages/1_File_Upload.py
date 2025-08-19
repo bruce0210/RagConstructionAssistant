@@ -1,45 +1,84 @@
 # interface/pages/1_File_Upload.py
 from __future__ import annotations
-import os, time, json
+import os, sys, time, json
 from pathlib import Path
 from typing import List, Dict, Any
 import streamlit as st
 import numpy as np
 
-from core.retrieval.ingest_docx import (
-    REPO_ROOT, INDEX_DIR, MEDIA_DIR,
-    parse_docx_into_clauses, get_embedder, embed_texts, build_faiss_index
-)
+# ---- make project root importable ---
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+# --------------------------------------
+
+# --- fix import path so "core" can be found ---
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+# ----------------------------------------------
+
+# ---- import ingest module in a reload-safe way ----
+import importlib
+import core.retrieval.ingest_docx as ingest_docx
+ingest_docx = importlib.reload(ingest_docx)  # 强制使用最新版本，避免旧缓存
+# 从模块对象上取属性，避免“按名导入命中旧版本”的问题
+REPO_ROOT  = ingest_docx.REPO_ROOT
+INDEX_DIR  = ingest_docx.INDEX_DIR
+MEDIA_DIR  = ingest_docx.MEDIA_DIR
+parse_docx_into_clauses = ingest_docx.parse_docx_into_clauses
+get_embedder            = ingest_docx.get_embedder
+embed_texts             = ingest_docx.embed_texts
+build_faiss_index       = ingest_docx.build_faiss_index
+# ---------------------------------------------------
+
 from core.utils.oss_io import get_oss_clients, oss_put
 
-st.set_page_config(page_title="Batch DOCX Ingest to OSS", page_icon="📄", layout="wide")
-st.title("📄 批量上传 DOCX → 解析/建索引 → 分桶上 OSS")
-st.caption("原始 DOCX 存 A 桶；抽取的图片存 B 桶；索引与元数据可选存 C 桶。ECS 内网上传，前端用公网 URL 访问。")
+# Title and welcome message
+st.set_page_config(
+    page_title="File Upload",
+    page_icon="📄",
+    layout="centered"
+)
+
+st.title("📄 File Upload")
+st.caption("Upload construction-related documents & Batch DOCX Ingest to JSON.")
 
 # ---- 参数区
 with st.sidebar:
     model_name = st.selectbox(
-        "Embedding 模型",
+        "Embedding Model",
         ["BAAI/bge-base-zh-v1.5", "BAAI/bge-m3"],
         index=0
     )
     batch = st.number_input("Embed batch size", 8, 1024, 64, 8)
-    force_cpu = st.toggle("FAISS 仅用 CPU", value=False)
-    backup_idx = st.toggle("把 faiss.index / meta.jsonl 备份到 OSS", value=True)
+    force_cpu = st.toggle("FAISS uses CPU only", value=False)
+    backup_idx = st.toggle("Back up faiss.index / meta.jsonl to OSS", value=False)
+    st.markdown("---")
+
+    st.caption("📄 Upload construction-related documents & Batch DOCX Ingest to JSON.")
+    st.markdown(
+        """
+        <a href="https://github.com/bruce0210/rag_construction_assistant" target="_blank">
+            <img src="https://github.com/codespaces/badge.svg" alt="Open in GitHub">
+        </a>
+        """,
+        unsafe_allow_html=True,
+    )
 
 # ---- 读取 OSS 客户端
 try:
     secrets = st.secrets if "oss" in st.secrets else {}
     bucket_docx, bucket_media, bucket_index, url_docx, url_media, url_index = get_oss_clients(secrets)
-    st.success("✅ OSS 已就绪（内网上传 + 公网访问）。")
+    st.success("✅OSS is ready (intranet upload + public network access)")
 except Exception as e:
-    st.error(f"❌ OSS 配置错误：{e}")
+    st.error(f"❌OSS configuration error：{e}")
     st.stop()
 
 # ---- 文件上传
-files = st.file_uploader("选择一个或多个 DOCX", type=["docx"], accept_multiple_files=True)
+files = st.file_uploader("Please select one or more DOC / DOCX format files.", type=["docx"], accept_multiple_files=True)
 if not files:
-    st.info("请先选择 DOCX。")
+    st.info("Please select DOC / DOCX format files first.")
     st.stop()
 
 # ---- 临时落地
@@ -54,14 +93,26 @@ for f in files:
     local_paths.append(p)
 
 st.write(f"📦 已接收 {len(local_paths)} 个文件。")
+# === NEW: 开始按钮 & 解析进度显示 ===
+start = st.button("🚀 开始解析并建立索引", type="primary")
+if not start:
+    st.stop()
+
+parse_bar = st.progress(0, text="准备解析…")
+file_log = st.container()          # 动态滚动显示“当前处理的文件名”
+parsed_rows = []                   # 累积显示条目
 
 # ---- 解析 & 抽图（图片会落在本地 MEDIA_DIR）
+# ---- 解析 & 抽图（带进度条与文件名滚动日志）
 all_clauses: List[Dict[str, Any]] = []
+total_files = len(local_paths)
 for i, p in enumerate(local_paths, 1):
-    st.write(f"🔍 解析：{p.name}")
     cs = parse_docx_into_clauses(p)
-    st.write(f"　└─ {len(cs)} 条款")
     all_clauses.extend(cs)
+
+    parsed_rows.append(f"{i}/{total_files} · {p.name} · 条款 {len(cs)}")
+    file_log.write("\n".join(parsed_rows[-30:]))  # 只显示最后30条，避免过长
+    parse_bar.progress(i/total_files, text=f"解析进度 {i}/{total_files} · {p.name}")
 
 if not all_clauses:
     st.warning("未解析到条款。")
@@ -70,26 +121,40 @@ if not all_clauses:
 # ---- 上传 DOCX 到 A 桶（并生成公网 URL）
 st.subheader("上传 DOCX 到 OSS（A 桶）")
 docx_url_map: Dict[str, str] = {}
-for p in local_paths:
+docx_bar = st.progress(0, text="准备上传 DOCX…")
+
+for i, p in enumerate(local_paths, 1):
     key = f"docx/{p.name}"
     oss_put(bucket_docx, p, key)
     u = url_docx(key)
     docx_url_map[p.name] = u
     st.write(f"☁️ {p.name} → {u}")
+    docx_bar.progress(i/len(local_paths), text=f"DOCX 上传 {i}/{len(local_paths)} · {p.name}")
 
 # ---- 上传图片到 B 桶，并把 meta 里的 media 改为公网 URL
 st.subheader("上传图片到 OSS（B 桶），回填 URL")
 uploaded_media: Dict[str, str] = {}
+
+total_imgs = sum(len(c.get("media", [])) for c in all_clauses)
+done_imgs = 0
+img_bar = st.progress(0, text="准备上传图片…")
+
 for c in all_clauses:
     new_media = []
     for rel in c.get("media", []):
         if rel in uploaded_media:
             new_media.append(uploaded_media[rel])
+            done_imgs += 1
+            img_bar.progress(done_imgs/max(total_imgs,1), text=f"图片上传 {done_imgs}/{total_imgs}")
             continue
+
         abs_path = (REPO_ROOT / rel).resolve()
         if not abs_path.exists():
+            # 计入进度，避免“卡住”
+            done_imgs += 1
+            img_bar.progress(done_imgs/max(total_imgs,1), text=f"图片缺失 {done_imgs}/{total_imgs} · {rel}")
             continue
-        # 以 MEDIA_DIR 的相对路径组织 key
+
         try:
             rel_key = abs_path.relative_to(MEDIA_DIR).as_posix()
         except Exception:
@@ -99,6 +164,10 @@ for c in all_clauses:
         u = url_media(key)
         uploaded_media[rel] = u
         new_media.append(u)
+
+        done_imgs += 1
+        img_bar.progress(done_imgs/max(total_imgs,1), text=f"图片上传 {done_imgs}/{total_imgs} · {abs_path.name}")
+
     c["media"] = new_media
 
 # ---- 生成向量 & 构建索引（本地）
@@ -106,7 +175,19 @@ st.subheader("Embedding & FAISS")
 os.environ["RAG_EMBED_MODEL"] = model_name
 model = get_embedder(model_name)
 texts = [c["text"] for c in all_clauses]
-vecs = embed_texts(model, texts, batch_size=int(batch))
+
+# === NEW: 手动分批做 embedding，并显示进度 ===
+emb_bar = st.progress(0, text="Embedding…")
+vec_chunks = []
+N = len(texts)
+B = int(batch)
+for j in range(0, N, B):
+    sub = texts[j:j+B]
+    arr = model.encode(sub, normalize_embeddings=True)   # 直接调用底层，避免控制台进度条
+    vec_chunks.append(arr.astype("float32"))
+    emb_bar.progress(min((j+len(sub))/max(N,1), 1.0), text=f"Embedding {j+len(sub)}/{N}")
+
+vecs = np.vstack(vec_chunks)
 index = build_faiss_index(vecs, use_gpu_if_possible=not force_cpu)
 
 INDEX_DIR.mkdir(parents=True, exist_ok=True)
