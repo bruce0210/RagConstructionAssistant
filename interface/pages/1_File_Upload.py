@@ -7,6 +7,7 @@ from shutil import rmtree
 
 import streamlit as st
 import numpy as np
+import pandas as pd  # 用于官方 dataframe 预览
 
 # ---- small utils for cleanup ----
 def _safe_unlink(p: Path):
@@ -20,6 +21,17 @@ def _safe_rmtree(p: Path):
         rmtree(p, ignore_errors=True)
     except Exception:
         pass
+
+def _fmt_bytes(n: int | None) -> str:
+    if not isinstance(n, (int, float)) or n < 0:
+        return "-"
+    if n < 1024:
+        return f"{n:.0f} B"
+    if n < 1024**2:
+        return f"{n/1024:.1f} KB"
+    if n < 1024**3:
+        return f"{n/1024**2:.1f} MB"
+    return f"{n/1024**3:.1f} GB"
 # ----------------------------------
 
 # ---- make project root importable ---
@@ -37,17 +49,17 @@ if _REPO_ROOT not in sys.path:
 # ---- import ingest module in a reload-safe way ----
 import importlib
 import core.retrieval.ingest_docx as ingest_docx
-ingest_docx = importlib.reload(ingest_docx)  # 强制使用最新版本，避免旧缓存
-# 从模块对象上取属性，避免“按名导入命中旧版本”的问题
+ingest_docx = importlib.reload(ingest_docx)  # 强制使用最新版本
+# 从模块对象上取属性
 REPO_ROOT  = ingest_docx.REPO_ROOT
 INDEX_DIR  = ingest_docx.INDEX_DIR
 MEDIA_DIR  = ingest_docx.MEDIA_DIR
 parse_docx_into_clauses = ingest_docx.parse_docx_into_clauses
 get_embedder            = ingest_docx.get_embedder
 embed_texts             = ingest_docx.embed_texts
-build_faiss_index       = ingest_docx.build_faiss_index  # 仍保留，如需新建
+build_faiss_index       = ingest_docx.build_faiss_index
 write_faiss_index       = ingest_docx.write_faiss_index
-# 追加模式 + 整文档去重：新增工具函数引用
+# 追加模式 + 整文档去重
 load_seen_doc_hashes        = ingest_docx.load_seen_doc_hashes
 file_blake2b_hex            = ingest_docx.file_blake2b_hex
 count_existing_meta_lines   = ingest_docx.count_existing_meta_lines
@@ -72,13 +84,12 @@ with st.sidebar:
     model_name = st.selectbox(
         "Embedding Model",
         ["BAAI/bge-base-zh-v1.5", "BAAI/bge-m3"],
-        index=1  # 默认选 m3，如需保持原样可改回 0
+        index=1  # 默认 m3
     )
     batch = st.number_input("Embed batch size", 8, 1024, 64, 8)
     force_cpu = st.toggle("FAISS uses CPU only", value=False)
     backup_idx = st.toggle("Back up faiss.index / meta.jsonl to OSS", value=False)
     st.markdown("---")
-
     st.caption("📄 Upload construction-related documents & Batch DOCX Ingest to JSON.")
     st.markdown(
         """
@@ -98,13 +109,35 @@ except Exception as e:
     st.error(f"❌OSS configuration error：{e}")
     st.stop()
 
-# ---- 文件上传
-files = st.file_uploader("Please select one or more DOC / DOCX format files.", type=["docx"], accept_multiple_files=True)
+# ---- 隐藏 uploader 自带的文件卡片
+st.markdown("""
+<style>
+[data-testid="stFileUploader"] [data-testid="stFileUploaderFileList"] { display:none; }
+[data-testid="stFileUploader"] .uploadedFile { display:none; }
+</style>
+""", unsafe_allow_html=True)
+
+# ---- 文件上传（多选）
+files = st.file_uploader(
+    "Please select one or more DOC / DOCX format files.",
+    type=["docx"],
+    accept_multiple_files=True
+)
 if not files:
     st.info("Please select DOC / DOCX format files first.")
     st.stop()
 
-# ---- 临时落地
+# 官方 DataFrame 预览
+rows = [{"File": Path(f.name).name, "Size": _fmt_bytes(getattr(f, "size", None))} for f in files]
+df = pd.DataFrame(rows)
+df.index = pd.RangeIndex(start=1, stop=len(df)+1, step=1, name="#")
+st.dataframe(df, use_container_width=True, height=360)
+
+start_ingest = st.button("🚀 开始处理并建立索引", type="primary")
+if not start_ingest:
+    st.stop()
+
+# ---- 临时落地（仅点击后写磁盘）
 TMP = REPO_ROOT / ".tmp_uploads"
 TMP.mkdir(parents=True, exist_ok=True)
 local_paths: List[Path] = []
@@ -114,18 +147,17 @@ for f in files:
     with open(p, "wb") as out:
         out.write(f.read())
     local_paths.append(p)
-
 st.write(f"📦 已接收 {len(local_paths)} 个文件。")
 
-# ---- 目标索引/元数据路径（供去重与追加使用）
+# ---- 目标索引/元数据路径
 INDEX_DIR.mkdir(parents=True, exist_ok=True)
 faiss_path = INDEX_DIR / "faiss.index"
 meta_path  = INDEX_DIR / "meta.jsonl"
 
 # === 解析 & 抽图（追加模式 + 整文档去重） ===
 parse_bar = st.progress(0, text="准备解析…")
-file_log = st.container()          # 动态滚动显示“当前处理的文件名”
-parsed_rows = []                   # 累积显示条目
+file_log = st.empty()
+status_lines: List[str] = []
 
 all_clauses: List[Dict[str, Any]] = []
 kept_paths: List[Path] = []
@@ -134,37 +166,36 @@ batch_seen_docs: set[str] = set()
 
 total_files = len(local_paths)
 for i, p in enumerate(local_paths, 1):
-    # 计算整文档指纹，用于整文档去重
+    # 整文档指纹
     try:
         doc_bytes = p.read_bytes()
     except Exception:
         doc_bytes = b""
     doc_hash = file_blake2b_hex(doc_bytes)
 
-    # 重复判定：已入库 or 本批已见 → 跳过
+    # 已入库 / 本批重复 → 跳过
     if doc_hash in seen_docs or doc_hash in batch_seen_docs:
-        parsed_rows.append(f"{i}/{total_files} · {p.name} · 已跳过（重复文档）")
-        file_log.write("\n".join(parsed_rows[-30:]))
+        status_lines.append(f"{i}/{total_files} · {p.name} · 已跳过（重复文档）")
+        file_log.text("\n".join(status_lines[-30:]))
         parse_bar.progress(i/total_files, text=f"解析进度 {i}/{total_files} · {p.name} · 跳过重复")
         continue
 
     cs = parse_docx_into_clauses(p)
-    # 给本文件的所有条目打上 doc_hash（便于后续再去重）
     for c in cs:
-        c["doc_hash"] = doc_hash
+        c["doc_hash"] = doc_hash  # 写入到每条记录
     all_clauses.extend(cs)
     kept_paths.append(p)
     batch_seen_docs.add(doc_hash)
 
-    parsed_rows.append(f"{i}/{total_files} · {p.name} · 条款 {len(cs)}")
-    file_log.write("\n".join(parsed_rows[-30:]))  # 只显示最后30条，避免过长
+    status_lines.append(f"{i}/{total_files} · {p.name} · 条款 {len(cs)}")
+    file_log.text("\n".join(status_lines[-30:]))
     parse_bar.progress(i/total_files, text=f"解析进度 {i}/{total_files} · {p.name}")
 
 if not all_clauses:
     st.info("本批文档均为重复或未解析到有效条款，未进行追加。")
     st.stop()
 
-# ---- 上传 DOCX 到 A 桶（仅上传非重复的 kept_paths）
+# ---- 上传 DOCX 到 A 桶（仅新文档）
 st.subheader("上传 DOCX 到 OSS（A 桶）")
 docx_url_map: Dict[str, str] = {}
 docx_bar = st.progress(0, text="准备上传 DOCX…")
@@ -180,10 +211,10 @@ else:
         st.write(f"☁️ {p.name} → {u}")
         docx_bar.progress(i/len(kept_paths), text=f"DOCX 上传 {i}/{len(kept_paths)} · {p.name}")
 
-# ---- 上传图片到 B 桶，并把 meta 里的 media 改为公网 URL（仅对新条目）
+# ---- 上传图片到 B 桶，并把 meta 里的 media 改为公网 URL（仅新条目）
 st.subheader("上传图片到 OSS（B 桶），回填 URL")
 uploaded_media: Dict[str, str] = {}
-doc_media_roots: set[Path] = set()   # 本批每个 docx 的本地图片根目录 data/media/<slug>
+doc_media_roots: set[Path] = set()  # 本批每个 docx 的 data/media/<slug>
 
 total_imgs = sum(len(c.get("media", [])) for c in all_clauses)
 done_imgs = 0
@@ -192,27 +223,29 @@ img_bar = st.progress(0, text="准备上传图片…")
 for c in all_clauses:
     new_media = []
     for rel in c.get("media", []):
+        # 1) 同一批内重复使用同一张 → 直接复用 URL
         if rel in uploaded_media:
             new_media.append(uploaded_media[rel])
             done_imgs += 1
             img_bar.progress(done_imgs/max(total_imgs,1), text=f"图片上传 {done_imgs}/{total_imgs}")
             continue
 
+        # 2) 计算绝对路径
         abs_path = (REPO_ROOT / rel).resolve()
         if not abs_path.exists():
-            # 计入进度，避免“卡住”
             done_imgs += 1
             img_bar.progress(done_imgs/max(total_imgs,1), text=f"图片缺失 {done_imgs}/{total_imgs} · {rel}")
             continue
 
-        # 记录该文档的图片根目录：data/media/<slug>/...
+        # 记录该文档的图片根目录：data/media/<slug>
         try:
-            rel_from_media = abs_path.relative_to(MEDIA_DIR)  # "<slug>/clause_x/img_0.jpg"
-            doc_root = MEDIA_DIR / rel_from_media.parts[0]    # data/media/<slug>
+            rel_from_media = abs_path.relative_to(MEDIA_DIR)   # "<slug>/clause_x/img_0.jpg"
+            doc_root = MEDIA_DIR / rel_from_media.parts[0]      # data/media/<slug>
             doc_media_roots.add(doc_root)
         except Exception:
             pass
 
+        # 3) 上传并生成公网 URL
         try:
             rel_key = abs_path.relative_to(MEDIA_DIR).as_posix()
         except Exception:
@@ -220,42 +253,40 @@ for c in all_clauses:
         key = f"media/{rel_key}"
         oss_put(bucket_media, abs_path, key)
         u = url_media(key)
+
         uploaded_media[rel] = u
         new_media.append(u)
 
         done_imgs += 1
         img_bar.progress(done_imgs/max(total_imgs,1), text=f"图片上传 {done_imgs}/{total_imgs} · {abs_path.name}")
 
+    # ★ 用 OSS URL 覆盖原本的相对路径
     c["media"] = new_media
 
-# ---- 生成向量（仅新条目） & 以“追加模式”构建索引（本地）
+# ---- 生成向量（仅新条目） & 追加索引（本地）
 st.subheader("Embedding & FAISS (Append Mode)")
 os.environ["RAG_EMBED_MODEL"] = model_name
 model = get_embedder(model_name)
 texts = [c["text"] for c in all_clauses]
 
-# 手动分批做 embedding，并显示进度
 emb_bar = st.progress(0, text="Embedding…")
 vec_chunks = []
 N = len(texts)
 B = int(batch)
 for j in range(0, N, B):
     sub = texts[j:j+B]
-    # 直接调用底层，避免控制台进度条
     arr = model.encode(sub, normalize_embeddings=True)
     vec_chunks.append(arr.astype("float32"))
     emb_bar.progress(min((j+len(sub))/max(N,1), 1.0), text=f"Embedding {j+len(sub)}/{N}")
-
 vecs = np.vstack(vec_chunks)
 
-# 读取旧索引并在其后追加；若没有旧库则新建
+# 旧库存在则在其后追加；否则新建
 index = build_or_append_faiss_index(
     vecs, faiss_path, use_gpu_if_possible=not force_cpu
 )
 write_faiss_index(index, faiss_path)
 
-# ---- 生成/追加元数据（补充 source_url、doc_hash 已在解析时打上）
-# 先把 source_url 回填
+# ---- 生成/追加元数据（补充 source_url）
 for c in all_clauses:
     src = c.get("source", "")
     hit = None
@@ -266,7 +297,6 @@ for c in all_clauses:
     if hit:
         c["source_url"] = hit
 
-# 以追加模式写入 meta.jsonl，并按已有行数续号 id
 base_id = count_existing_meta_lines(meta_path)
 write_meta_jsonl(all_clauses, meta_path, base_id=base_id, append=True)
 
@@ -285,7 +315,7 @@ if backup_idx and bucket_index is not None:
 for p in local_paths:
     _safe_unlink(p)
 try:
-    TMP.rmdir()  # 若目录为空则删除
+    TMP.rmdir()
 except OSError:
     pass
 
@@ -293,4 +323,4 @@ for d in doc_media_roots:
     _safe_rmtree(d)
 
 st.balloons()
-st.success("🎉 完成：DOCX 入 A 桶、图片入 B 桶、索引已追加（C 桶备份可选）。本地临时 DOCX 与图片已清理。")
+st.success("🎉 完成：DOCX 入 A 桶、图片入 B 桶（media 字段为公网 URL）、索引已追加（C 桶备份可选）。")
