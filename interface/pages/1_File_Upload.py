@@ -3,8 +3,24 @@ from __future__ import annotations
 import os, sys, time, json
 from pathlib import Path
 from typing import List, Dict, Any
+from shutil import rmtree
+
 import streamlit as st
 import numpy as np
+
+# ---- small utils for cleanup ----
+def _safe_unlink(p: Path):
+    try:
+        p.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+def _safe_rmtree(p: Path):
+    try:
+        rmtree(p, ignore_errors=True)
+    except Exception:
+        pass
+# ----------------------------------
 
 # ---- make project root importable ---
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
@@ -31,7 +47,7 @@ get_embedder            = ingest_docx.get_embedder
 embed_texts             = ingest_docx.embed_texts
 build_faiss_index       = ingest_docx.build_faiss_index  # 仍保留，如需新建
 write_faiss_index       = ingest_docx.write_faiss_index
-# ✅ 追加模式 + 整文档去重：新增工具函数引用
+# 追加模式 + 整文档去重：新增工具函数引用
 load_seen_doc_hashes        = ingest_docx.load_seen_doc_hashes
 file_blake2b_hex            = ingest_docx.file_blake2b_hex
 count_existing_meta_lines   = ingest_docx.count_existing_meta_lines
@@ -106,7 +122,7 @@ INDEX_DIR.mkdir(parents=True, exist_ok=True)
 faiss_path = INDEX_DIR / "faiss.index"
 meta_path  = INDEX_DIR / "meta.jsonl"
 
-# === NEW: 解析 & 抽图（追加模式 + 整文档去重） ===
+# === 解析 & 抽图（追加模式 + 整文档去重） ===
 parse_bar = st.progress(0, text="准备解析…")
 file_log = st.container()          # 动态滚动显示“当前处理的文件名”
 parsed_rows = []                   # 累积显示条目
@@ -167,6 +183,7 @@ else:
 # ---- 上传图片到 B 桶，并把 meta 里的 media 改为公网 URL（仅对新条目）
 st.subheader("上传图片到 OSS（B 桶），回填 URL")
 uploaded_media: Dict[str, str] = {}
+doc_media_roots: set[Path] = set()   # 本批每个 docx 的本地图片根目录 data/media/<slug>
 
 total_imgs = sum(len(c.get("media", [])) for c in all_clauses)
 done_imgs = 0
@@ -187,6 +204,14 @@ for c in all_clauses:
             done_imgs += 1
             img_bar.progress(done_imgs/max(total_imgs,1), text=f"图片缺失 {done_imgs}/{total_imgs} · {rel}")
             continue
+
+        # 记录该文档的图片根目录：data/media/<slug>/...
+        try:
+            rel_from_media = abs_path.relative_to(MEDIA_DIR)  # "<slug>/clause_x/img_0.jpg"
+            doc_root = MEDIA_DIR / rel_from_media.parts[0]    # data/media/<slug>
+            doc_media_roots.add(doc_root)
+        except Exception:
+            pass
 
         try:
             rel_key = abs_path.relative_to(MEDIA_DIR).as_posix()
@@ -216,13 +241,14 @@ N = len(texts)
 B = int(batch)
 for j in range(0, N, B):
     sub = texts[j:j+B]
-    arr = model.encode(sub, normalize_embeddings=True)   # 直接调用底层，避免控制台进度条
+    # 直接调用底层，避免控制台进度条
+    arr = model.encode(sub, normalize_embeddings=True)
     vec_chunks.append(arr.astype("float32"))
     emb_bar.progress(min((j+len(sub))/max(N,1), 1.0), text=f"Embedding {j+len(sub)}/{N}")
 
 vecs = np.vstack(vec_chunks)
 
-# ✅ 读取旧索引并在其后追加；若没有旧库则新建
+# 读取旧索引并在其后追加；若没有旧库则新建
 index = build_or_append_faiss_index(
     vecs, faiss_path, use_gpu_if_possible=not force_cpu
 )
@@ -255,5 +281,16 @@ if backup_idx and bucket_index is not None:
     st.write(f"☁️ 索引 → {url_index(idx_key)}")
     st.write(f"☁️ 元数据 → {url_index(meta_key)}")
 
+# ---- 统一清理：临时 DOCX 与本批图片目录（已将 URL 回填为 OSS）
+for p in local_paths:
+    _safe_unlink(p)
+try:
+    TMP.rmdir()  # 若目录为空则删除
+except OSError:
+    pass
+
+for d in doc_media_roots:
+    _safe_rmtree(d)
+
 st.balloons()
-st.success("🎉 完成：DOCX 入 A 桶、图片入 B 桶、索引已追加（C 桶备份可选）。")
+st.success("🎉 完成：DOCX 入 A 桶、图片入 B 桶、索引已追加（C 桶备份可选）。本地临时 DOCX 与图片已清理。")
