@@ -21,3 +21,4 @@ data/processed/
 
 # Logs
 *.log
+.streamlit/secrets.toml

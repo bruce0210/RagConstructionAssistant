@@ -30,6 +30,7 @@ parse_docx_into_clauses = ingest_docx.parse_docx_into_clauses
 get_embedder            = ingest_docx.get_embedder
 embed_texts             = ingest_docx.embed_texts
 build_faiss_index       = ingest_docx.build_faiss_index
+write_faiss_index       = ingest_docx.write_faiss_index
 # ---------------------------------------------------
 
 from core.utils.oss_io import get_oss_clients, oss_put
@@ -194,8 +195,11 @@ INDEX_DIR.mkdir(parents=True, exist_ok=True)
 faiss_path = INDEX_DIR / "faiss.index"
 meta_path  = INDEX_DIR / "meta.jsonl"
 
-import faiss
-faiss.write_index(index, str(faiss_path))
+st.write("写入索引路径：", faiss_path.resolve())
+st.write("写入元数据路径：", meta_path.resolve())
+
+# 写入索引（通过 ingest_docx 内部的 faiss 封装，避免顶层导入 faiss）
+write_faiss_index(index, faiss_path)
 
 # meta：补充 source_url（DOCX 的公网 URL）
 with open(meta_path, "w", encoding="utf-8") as f:
