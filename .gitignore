@@ -1,4 +1,4 @@
-# Byte-compiled / cache
+# === Python cache / build ===
 __pycache__/
 *.py[cod]
 *.so
@@ -14,11 +14,20 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# FAISS index and local embeddings
+# === Logs ===
+*.log
+
+# === Streamlit secrets ===
+.streamlit/secrets.toml
+
+# === FAISS index and local embeddings (old) ===
 data/embeddings/
 data/faiss_index/
 data/processed/
 
-# Logs
-*.log
-.streamlit/secrets.toml
+# === New: Locally generated indexes/images/temporary files ===
+data/index/         # faiss.index + meta.jsonl
+data/media/         # The parsed picture
+.tmp_uploads/       # Temporary storage of front-end uploads
+**/*.docx           # Docx accidentally left in the warehouse
+**/*.doc            # Same as above, to avoid miscommunication of Word files

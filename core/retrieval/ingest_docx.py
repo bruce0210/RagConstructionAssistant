@@ -1,7 +1,7 @@
 # core/retrieval/ingest_docx.py
 from __future__ import annotations
 from pathlib import Path
-import os, re, json
+import os, re, json, hashlib   # 新增 hashlib
 from typing import List, Dict, Any
 
 from docx import Document
@@ -36,8 +36,12 @@ MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
 __all__ = [
     "REPO_ROOT", "DATA_DIR", "INDEX_DIR", "MEDIA_DIR",
-    "parse_docx_into_clauses", "get_embedder", "embed_texts", "build_faiss_index",
-    "write_faiss_index",
+    "parse_docx_into_clauses", "get_embedder", "embed_texts",
+    "build_faiss_index", "write_faiss_index",
+    # 新增导出：追加模式 + 整文档去重 所需工具
+    "load_faiss_index_if_exists", "count_existing_meta_lines",
+    "build_or_append_faiss_index", "write_meta_jsonl",
+    "file_blake2b_hex", "load_seen_doc_hashes",
 ]
 
 # ---------- DOCX parsing ----------
@@ -110,7 +114,7 @@ def _extract_images_from_elem(doc: Document, elem, save_dir: Path) -> List[str]:
         if getattr(rel, "is_external", False):
             continue
 
-        part = rel.target_part  # ✅ 正确属性名
+        part = rel.target_part  # 正确属性名
         # part.partname 可能是 PackURI，转成字符串再取扩展名
         partname = str(part.partname)
         ext = os.path.splitext(os.path.basename(partname))[-1] or ".png"
@@ -250,9 +254,114 @@ def write_faiss_index(index, path: Path):
     faiss.write_index(index, str(path))
 
 
+# ========= 追加模式 + 整文档去重：新增的工具函数 =========
+
+def load_faiss_index_if_exists(path: Path):
+    """
+    若磁盘上已有 FAISS 索引则读回（CPU 版）；不存在返回 None。
+    """
+    import faiss
+    p = Path(path)
+    if p.exists() and p.stat().st_size > 0:
+        return faiss.read_index(str(p))
+    return None
+
+
+def count_existing_meta_lines(path: Path) -> int:
+    """
+    统计已有 meta.jsonl 的行数（= 已入库向量数），不存在时返回 0。
+    """
+    p = Path(path)
+    if not p.exists():
+        return 0
+    with p.open("r", encoding="utf-8") as f:
+        return sum(1 for _ in f)
+
+
+def build_or_append_faiss_index(new_vecs: np.ndarray, index_path: Path, use_gpu_if_possible: bool = True):
+    """
+    读取已存在的索引并在其后追加 new_vecs；若不存在则新建。
+    返回 CPU 版索引（用于后续写盘）。
+    """
+    import faiss
+
+    dim = int(new_vecs.shape[1])
+    cpu_index = load_faiss_index_if_exists(index_path)
+
+    if cpu_index is None:
+        cpu_index = faiss.IndexFlatIP(dim)
+    else:
+        if cpu_index.d != dim:
+            raise ValueError(
+                f"Existing index dim={cpu_index.d} != new dim={dim}. "
+                "请确认使用的是同一 Embedding 模型 / 同一 prompt。"
+            )
+
+    # 在 GPU 上追加更快，然后迁回 CPU
+    add_index = cpu_index
+    if use_gpu_if_possible and hasattr(faiss, "StandardGpuResources") and faiss.get_num_gpus() > 0:
+        res = faiss.StandardGpuResources()
+        add_index = faiss.index_cpu_to_gpu(res, 0, cpu_index)
+
+    add_index.add(new_vecs.astype("float32"))
+
+    # 回迁到 CPU（CPU 索引会抛异常，忽略即可）
+    try:
+        cpu_index = faiss.index_gpu_to_cpu(add_index)
+    except Exception:
+        pass
+    return cpu_index
+
+
+def write_meta_jsonl(records: List[Dict[str, Any]], path: Path, base_id: int = 0, append: bool = True):
+    """
+    以 JSONL 方式写元数据。append=True 表示以追加模式写入；
+    同时给每条记录续号：record['id'] = base_id + i（若已有 id 则不覆盖）。
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mode = "a" if append and path.exists() else "w"
+    with path.open(mode, encoding="utf-8") as f:
+        for i, rec in enumerate(records):
+            obj = dict(rec)
+            obj.setdefault("id", base_id + i)
+            f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+
+
+def file_blake2b_hex(data: bytes, digest_size: int = 16) -> str:
+    """
+    计算整文档级别的指纹（blake2b），用于整文档去重。
+    说明：digest_size=16 → 128bit；可根据需要调整。
+    """
+    h = hashlib.blake2b(digest_size=digest_size)
+    h.update(data)
+    return h.hexdigest()
+
+
+def load_seen_doc_hashes(meta_path: Path) -> set[str]:
+    """
+    从现有 meta.jsonl 里加载已出现过的 doc_hash 集合。
+    行解析失败时忽略该行。
+    """
+    seen: set[str] = set()
+    p = Path(meta_path)
+    if not p.exists():
+        return seen
+    with p.open("r", encoding="utf-8") as f:
+        for line in f:
+            try:
+                obj = json.loads(line)
+                dh = obj.get("doc_hash")
+                if dh:
+                    seen.add(dh)
+            except Exception:
+                pass
+    return seen
+
+
 # ---------- CLI (optional) ----------
 
-def _cli_ingest_docx(docx_file: str, model_name: str = "BAAI/bge-small-zh-v1.5"):
+def _cli_ingest_docx(docx_file: str, model_name: str = "BAAI/bge-m3"):
     p = Path(docx_file)
     assert p.exists(), f"找不到文件：{p}"
     clauses = parse_docx_into_clauses(p)
@@ -278,6 +387,6 @@ if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("docx", help="docx 规范路径")
-    ap.add_argument("--model", default="BAAI/bge-small-zh-v1.5")
+    ap.add_argument("--model", default="BAAI/bge-m3")
     args = ap.parse_args()
     _cli_ingest_docx(args.docx, model_name=args.model)

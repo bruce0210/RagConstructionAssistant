@@ -29,8 +29,14 @@ MEDIA_DIR  = ingest_docx.MEDIA_DIR
 parse_docx_into_clauses = ingest_docx.parse_docx_into_clauses
 get_embedder            = ingest_docx.get_embedder
 embed_texts             = ingest_docx.embed_texts
-build_faiss_index       = ingest_docx.build_faiss_index
+build_faiss_index       = ingest_docx.build_faiss_index  # 仍保留，如需新建
 write_faiss_index       = ingest_docx.write_faiss_index
+# ✅ 追加模式 + 整文档去重：新增工具函数引用
+load_seen_doc_hashes        = ingest_docx.load_seen_doc_hashes
+file_blake2b_hex            = ingest_docx.file_blake2b_hex
+count_existing_meta_lines   = ingest_docx.count_existing_meta_lines
+build_or_append_faiss_index = ingest_docx.build_or_append_faiss_index
+write_meta_jsonl            = ingest_docx.write_meta_jsonl
 # ---------------------------------------------------
 
 from core.utils.oss_io import get_oss_clients, oss_put
@@ -50,7 +56,7 @@ with st.sidebar:
     model_name = st.selectbox(
         "Embedding Model",
         ["BAAI/bge-base-zh-v1.5", "BAAI/bge-m3"],
-        index=0
+        index=1  # 默认选 m3，如需保持原样可改回 0
     )
     batch = st.number_input("Embed batch size", 8, 1024, 64, 8)
     force_cpu = st.toggle("FAISS uses CPU only", value=False)
@@ -94,45 +100,71 @@ for f in files:
     local_paths.append(p)
 
 st.write(f"📦 已接收 {len(local_paths)} 个文件。")
-# === NEW: 开始按钮 & 解析进度显示 ===
-start = st.button("🚀 开始解析并建立索引", type="primary")
-if not start:
-    st.stop()
 
+# ---- 目标索引/元数据路径（供去重与追加使用）
+INDEX_DIR.mkdir(parents=True, exist_ok=True)
+faiss_path = INDEX_DIR / "faiss.index"
+meta_path  = INDEX_DIR / "meta.jsonl"
+
+# === NEW: 解析 & 抽图（追加模式 + 整文档去重） ===
 parse_bar = st.progress(0, text="准备解析…")
 file_log = st.container()          # 动态滚动显示“当前处理的文件名”
 parsed_rows = []                   # 累积显示条目
 
-# ---- 解析 & 抽图（图片会落在本地 MEDIA_DIR）
-# ---- 解析 & 抽图（带进度条与文件名滚动日志）
 all_clauses: List[Dict[str, Any]] = []
+kept_paths: List[Path] = []
+seen_docs = load_seen_doc_hashes(meta_path)
+batch_seen_docs: set[str] = set()
+
 total_files = len(local_paths)
 for i, p in enumerate(local_paths, 1):
+    # 计算整文档指纹，用于整文档去重
+    try:
+        doc_bytes = p.read_bytes()
+    except Exception:
+        doc_bytes = b""
+    doc_hash = file_blake2b_hex(doc_bytes)
+
+    # 重复判定：已入库 or 本批已见 → 跳过
+    if doc_hash in seen_docs or doc_hash in batch_seen_docs:
+        parsed_rows.append(f"{i}/{total_files} · {p.name} · 已跳过（重复文档）")
+        file_log.write("\n".join(parsed_rows[-30:]))
+        parse_bar.progress(i/total_files, text=f"解析进度 {i}/{total_files} · {p.name} · 跳过重复")
+        continue
+
     cs = parse_docx_into_clauses(p)
+    # 给本文件的所有条目打上 doc_hash（便于后续再去重）
+    for c in cs:
+        c["doc_hash"] = doc_hash
     all_clauses.extend(cs)
+    kept_paths.append(p)
+    batch_seen_docs.add(doc_hash)
 
     parsed_rows.append(f"{i}/{total_files} · {p.name} · 条款 {len(cs)}")
     file_log.write("\n".join(parsed_rows[-30:]))  # 只显示最后30条，避免过长
     parse_bar.progress(i/total_files, text=f"解析进度 {i}/{total_files} · {p.name}")
 
 if not all_clauses:
-    st.warning("未解析到条款。")
+    st.info("本批文档均为重复或未解析到有效条款，未进行追加。")
     st.stop()
 
-# ---- 上传 DOCX 到 A 桶（并生成公网 URL）
+# ---- 上传 DOCX 到 A 桶（仅上传非重复的 kept_paths）
 st.subheader("上传 DOCX 到 OSS（A 桶）")
 docx_url_map: Dict[str, str] = {}
 docx_bar = st.progress(0, text="准备上传 DOCX…")
 
-for i, p in enumerate(local_paths, 1):
-    key = f"docx/{p.name}"
-    oss_put(bucket_docx, p, key)
-    u = url_docx(key)
-    docx_url_map[p.name] = u
-    st.write(f"☁️ {p.name} → {u}")
-    docx_bar.progress(i/len(local_paths), text=f"DOCX 上传 {i}/{len(local_paths)} · {p.name}")
+if not kept_paths:
+    st.info("本批无新文档需要上传到 A 桶。")
+else:
+    for i, p in enumerate(kept_paths, 1):
+        key = f"docx/{p.name}"
+        oss_put(bucket_docx, p, key)
+        u = url_docx(key)
+        docx_url_map[p.name] = u
+        st.write(f"☁️ {p.name} → {u}")
+        docx_bar.progress(i/len(kept_paths), text=f"DOCX 上传 {i}/{len(kept_paths)} · {p.name}")
 
-# ---- 上传图片到 B 桶，并把 meta 里的 media 改为公网 URL
+# ---- 上传图片到 B 桶，并把 meta 里的 media 改为公网 URL（仅对新条目）
 st.subheader("上传图片到 OSS（B 桶），回填 URL")
 uploaded_media: Dict[str, str] = {}
 
@@ -171,13 +203,13 @@ for c in all_clauses:
 
     c["media"] = new_media
 
-# ---- 生成向量 & 构建索引（本地）
-st.subheader("Embedding & FAISS")
+# ---- 生成向量（仅新条目） & 以“追加模式”构建索引（本地）
+st.subheader("Embedding & FAISS (Append Mode)")
 os.environ["RAG_EMBED_MODEL"] = model_name
 model = get_embedder(model_name)
 texts = [c["text"] for c in all_clauses]
 
-# === NEW: 手动分批做 embedding，并显示进度 ===
+# 手动分批做 embedding，并显示进度
 emb_bar = st.progress(0, text="Embedding…")
 vec_chunks = []
 N = len(texts)
@@ -189,31 +221,28 @@ for j in range(0, N, B):
     emb_bar.progress(min((j+len(sub))/max(N,1), 1.0), text=f"Embedding {j+len(sub)}/{N}")
 
 vecs = np.vstack(vec_chunks)
-index = build_faiss_index(vecs, use_gpu_if_possible=not force_cpu)
 
-INDEX_DIR.mkdir(parents=True, exist_ok=True)
-faiss_path = INDEX_DIR / "faiss.index"
-meta_path  = INDEX_DIR / "meta.jsonl"
-
-st.write("写入索引路径：", faiss_path.resolve())
-st.write("写入元数据路径：", meta_path.resolve())
-
-# 写入索引（通过 ingest_docx 内部的 faiss 封装，避免顶层导入 faiss）
+# ✅ 读取旧索引并在其后追加；若没有旧库则新建
+index = build_or_append_faiss_index(
+    vecs, faiss_path, use_gpu_if_possible=not force_cpu
+)
 write_faiss_index(index, faiss_path)
 
-# meta：补充 source_url（DOCX 的公网 URL）
-with open(meta_path, "w", encoding="utf-8") as f:
-    for c in all_clauses:
-        src = c.get("source", "")
-        # 尝试匹配时间戳文件名
-        hit = None
-        for p in local_paths:
-            if src == p.name or src == p.name.split("_", 1)[-1]:
-                hit = docx_url_map.get(p.name)
-                break
-        if hit:
-            c["source_url"] = hit
-        f.write(json.dumps(c, ensure_ascii=False) + "\n")
+# ---- 生成/追加元数据（补充 source_url、doc_hash 已在解析时打上）
+# 先把 source_url 回填
+for c in all_clauses:
+    src = c.get("source", "")
+    hit = None
+    for p in kept_paths:
+        if src == p.name or src == p.name.split("_", 1)[-1]:
+            hit = docx_url_map.get(p.name)
+            break
+    if hit:
+        c["source_url"] = hit
+
+# 以追加模式写入 meta.jsonl，并按已有行数续号 id
+base_id = count_existing_meta_lines(meta_path)
+write_meta_jsonl(all_clauses, meta_path, base_id=base_id, append=True)
 
 st.success(f"✅ 本地索引：{faiss_path}")
 st.success(f"✅ 本地元数据：{meta_path}")
@@ -227,4 +256,4 @@ if backup_idx and bucket_index is not None:
     st.write(f"☁️ 元数据 → {url_index(meta_key)}")
 
 st.balloons()
-st.success("🎉 完成：DOCX 入 A 桶、图片入 B 桶、索引已建（C 桶备份可选）。")
+st.success("🎉 完成：DOCX 入 A 桶、图片入 B 桶、索引已追加（C 桶备份可选）。")
