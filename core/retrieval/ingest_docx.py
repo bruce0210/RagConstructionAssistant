@@ -288,31 +288,76 @@ def load_seen_doc_hashes(meta_path: Path) -> set[str]:
                 pass
     return seen
 
-def _cli_ingest_docx(docx_file: str, model_name: str = "BAAI/bge-m3"):
-    p = Path(docx_file)
-    assert p.exists(), f"找不到文件：{p}"
-    clauses = parse_docx_into_clauses(p)
-    print(f"[ingest] 条款：{len(clauses)}")
-
-    model = get_embedder(model_name)
-    texts = [c["text"] for c in clauses]
-    vecs = embed_texts(model, texts, batch_size=64)
-    index = build_faiss_index(vecs, use_gpu_if_possible=True)
-
+def _cli_ingest(paths: list[str], model_name: str = "BAAI/bge-m3"):
+    """
+    支持一次传多个 docx 或一个目录；会将新文档条款「追加」到现有索引与 meta.jsonl。
+    - 自动按 blake2b(docx bytes) 去重
+    - 维持同一 embedding 维度，防止混用不同模型
+    - 记录模型名到 data/index/model.txt，方便前端校验
+    """
     INDEX_DIR.mkdir(parents=True, exist_ok=True)
-    write_faiss_index(index, INDEX_DIR / "faiss.index")
-    with open(INDEX_DIR / "meta.jsonl", "w", encoding="utf-8") as f:
-        for c in clauses:
-            f.write(json.dumps(c, ensure_ascii=False) + "\n")
 
-    print(f"[ingest] 索引写入：{INDEX_DIR / 'faiss.index'}")
-    print(f"[ingest] 元数据写入：{INDEX_DIR / 'meta.jsonl'}")
-    print(f"[ingest] 图片目录：{MEDIA_DIR}")
+    # 1) 读取已存在的 meta 与索引、已见文档哈希
+    meta_path = INDEX_DIR / "meta.jsonl"
+    index_path = INDEX_DIR / "faiss.index"
+    seen = load_seen_doc_hashes(meta_path)
+    base_id = count_existing_meta_lines(meta_path)
+
+    # 2) 归一化要处理的 docx 列表
+    files: list[Path] = []
+    for p in paths:
+        p = Path(p)
+        if p.is_dir():
+            files += sorted(p.rglob("*.docx"))
+        elif p.suffix.lower() == ".docx":
+            files.append(p)
+        else:
+            raise AssertionError(f"不支持的输入：{p}")
+    assert files, "没有找到要处理的 .docx 文件"
+
+    # 3) 加载 embedding 模型
+    model = get_embedder(model_name)
+
+    # 4) 逐文件解析 → 编码 → 追加写入
+    appended = 0
+    for fp in files:
+        data = fp.read_bytes()
+        dh = file_blake2b_hex(data)
+        if dh in seen:
+            print(f"[skip] 已处理过：{fp.name}")
+            continue
+
+        clauses = parse_docx_into_clauses(fp)
+        if not clauses:
+            print(f"[warn] 无条款：{fp.name}")
+            continue
+
+        texts = [c["text"] for c in clauses]
+        vecs = embed_texts(model, texts, batch_size=64)
+
+        # 追加到现有索引
+        cpu_index = build_or_append_faiss_index(vecs, index_path, use_gpu_if_possible=True)
+        write_faiss_index(cpu_index, index_path)
+
+        # 写 meta（追加），补充 doc_hash 与 id（连续编号）
+        for c in clauses:
+            c["doc_hash"] = dh
+        write_meta_jsonl(clauses, meta_path, base_id=base_id, append=True)
+        base_id += len(clauses)
+        seen.add(dh)
+        appended += 1
+        print(f"[ingest] {fp.name} → 条款 {len(clauses)} 已追加")
+
+    # 5) 记录模型名，供前端核对
+    (INDEX_DIR / "model.txt").write_text(model_name, encoding="utf-8")
+
+    print(f"[done] 新追加文档：{appended}，索引：{index_path}，元数据：{meta_path}")
+
 
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
-    ap.add_argument("docx", help="docx 规范路径")
+    ap.add_argument("path", nargs="+", help="docx 文件或目录（可多个）")
     ap.add_argument("--model", default="BAAI/bge-m3")
     args = ap.parse_args()
-    _cli_ingest_docx(args.docx, model_name=args.model)
+    _cli_ingest(args.path, model_name=args.model)

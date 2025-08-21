@@ -19,8 +19,8 @@ def _load_model_cached(name: str):
     return SentenceTransformer(name, device=device)
 
 @st.cache_data(show_spinner=False)
-def _load_meta_cached(p: Path) -> List[Dict, Any]:
-    if not p.exists():
+def _load_meta_cached(p: Path, mtime: float, size: int) -> List[Dict[str, Any]]:
+    if not p.exists() or size == 0:
         return []
     rows: List[Dict[str, Any]] = []
     with p.open("r", encoding="utf-8") as f:
@@ -32,17 +32,29 @@ def _load_meta_cached(p: Path) -> List[Dict, Any]:
     return rows
 
 @st.cache_resource(show_spinner=False)
-def _load_faiss_cached(path: Path):
+def _load_faiss_cached(path: Path, mtime: float, size: int):
     import faiss
-    if not path.exists() or path.stat().st_size == 0:
+    if not path.exists() or size == 0:
         return None
     return faiss.read_index(str(path))
 
 def _ensure_index_ready():
-    if "records" not in st.session_state:
-        st.session_state.records = _load_meta_cached(INDEX_DIR / "meta.jsonl")
-    if "index" not in st.session_state:
-        st.session_state.index = _load_faiss_cached(INDEX_DIR / "faiss.index")
+    meta_file = INDEX_DIR / "meta.jsonl"
+    idx_file  = INDEX_DIR / "faiss.index"
+    meta_stat = meta_file.stat() if meta_file.exists() else None
+    idx_stat  = idx_file.stat()  if idx_file.exists()  else None
+
+    st.session_state["records"] = _load_meta_cached(
+        meta_file,
+        meta_stat.st_mtime if meta_stat else 0.0,
+        meta_stat.st_size  if meta_stat else 0,
+    )
+    st.session_state["index"] = _load_faiss_cached(
+        idx_file,
+        idx_stat.st_mtime if idx_stat else 0.0,
+        idx_stat.st_size  if idx_stat else 0,
+    )
+
 # -------------------------------------------------------------------
 
 # —— 处理弹窗关闭的 query 参数（新旧 API 兼容）——
