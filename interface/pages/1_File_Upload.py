@@ -86,7 +86,7 @@ with st.sidebar:
         ["BAAI/bge-base-zh-v1.5", "BAAI/bge-m3"],
         index=1  # 默认 m3
     )
-    batch = st.number_input("Embed batch size", 8, 1024, 64, 8)
+    batch = st.number_input("Embed batch size", 8, 1024, 512, 8)
     force_cpu = st.toggle("FAISS uses CPU only", value=False)
     backup_idx = st.toggle("Back up faiss.index / meta.jsonl to OSS", value=False)
     st.markdown("---")

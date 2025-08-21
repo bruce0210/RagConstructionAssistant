@@ -242,7 +242,7 @@ def llm_answer(query: str, hits: list[dict], level: str = "标准") -> str:
     return resp.choices[0].message.content.strip()
 # -------------------------------------------------------------------
 
-query = st.text_input("👷‍♂️How can I help you with your construction project today?", "导线的设计安全系数不应小于多少?")
+query = st.text_input("👷‍♂️How can I help you with your construction project today?", "搜：what is BIM? 试试看...")
 # 放在 query 输入框下面、Go/解读按钮处
 col_go, col_gpt, col_cfg = st.columns([1, 1, 0.2])
 with col_go:
