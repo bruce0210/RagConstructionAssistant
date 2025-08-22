@@ -83,7 +83,7 @@ st.caption("Ask questions about building specifications, engineering standards o
 with st.sidebar:
     model_name = st.selectbox("Embedding Model",
                               ["BAAI/bge-base-zh-v1.5", "BAAI/bge-m3"], index=1)
-    topk = st.slider("Top-K", 1, 10, 3, 1)
+    topk = st.slider("Top-K", 1, 10, 5, 1)
     st.markdown("---")
     st.caption("🏗️  Ask questions about building specifications, engineering standards or any construction engineering regulations.")
     st.markdown(
@@ -242,7 +242,7 @@ def llm_answer(query: str, hits: list[dict], level: str = "标准") -> str:
     return resp.choices[0].message.content.strip()
 # -------------------------------------------------------------------
 
-query = st.text_input("👷‍♂️How can I help you with your construction project today?", "搜：what is BIM? 试试看...")
+query = st.text_input("👷‍♂️How can I help you with your construction project today?", "搜：建筑物等电位联结导体的最小截面积？ 试试看...")
 # 放在 query 输入框下面、Go/解读按钮处
 col_go, col_gpt, col_cfg = st.columns([1, 1, 0.2])
 with col_go:
@@ -274,7 +274,7 @@ if go and query.strip():
     with st.spinner("Searching..."):
         hits = search(query.strip(), topk)
 
-    SIM_THRESHOLD = 60.0  # 语义相似度阈值（百分比）
+    SIM_THRESHOLD = 50.0  # 语义相似度阈值（百分比）
     filtered_hits = [r for r in hits if r.get("_score", 0.0) * 100 >= SIM_THRESHOLD]
     st.session_state["last_hits"] = filtered_hits  # 供 LLM 解读使用
 
