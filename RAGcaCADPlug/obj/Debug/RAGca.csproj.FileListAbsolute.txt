@@ -1,0 +1,16 @@
+G:\RAGca\RAGca\bin\Debug\runtimes\win-x86\native\WebView2Loader.dll
+G:\RAGca\RAGca\bin\Debug\runtimes\win-x64\native\WebView2Loader.dll
+G:\RAGca\RAGca\bin\Debug\runtimes\win-arm64\native\WebView2Loader.dll
+G:\RAGca\RAGca\bin\Debug\RAGca.dll
+G:\RAGca\RAGca\bin\Debug\RAGca.pdb
+G:\RAGca\RAGca\bin\Debug\Microsoft.Web.WebView2.Core.dll
+G:\RAGca\RAGca\bin\Debug\Microsoft.Web.WebView2.WinForms.dll
+G:\RAGca\RAGca\bin\Debug\Microsoft.Web.WebView2.Wpf.dll
+G:\RAGca\RAGca\bin\Debug\Microsoft.Web.WebView2.Core.xml
+G:\RAGca\RAGca\bin\Debug\Microsoft.Web.WebView2.WinForms.xml
+G:\RAGca\RAGca\bin\Debug\Microsoft.Web.WebView2.Wpf.xml
+G:\RAGca\RAGca\obj\Debug\RAGca.csproj.AssemblyReference.cache
+G:\RAGca\RAGca\obj\Debug\RAGca.csproj.CoreCompileInputs.cache
+G:\RAGca\RAGca\obj\Debug\RAGca.csproj.Up2Date
+G:\RAGca\RAGca\obj\Debug\RAGca.dll
+G:\RAGca\RAGca\obj\Debug\RAGca.pdb
