@@ -85,6 +85,46 @@ with st.sidebar:
                               ["BAAI/bge-base-zh-v1.5", "BAAI/bge-m3"], index=1)
     topk = st.slider("Top-K", 1, 10, 5, 1)
     st.markdown("---")
+    # 登录/注册按钮
+    st.caption("🔐 Account")
+    if st.session_state.get("user"):
+        u = st.session_state["user"]
+        st.markdown(
+            f'''
+            <div style="display:flex;align-items:center;gap:10px;margin:4px 0 10px;">
+            <!-- 左侧头像 -->
+            <img src="https://ragca-project-attachments.oss-ap-northeast-1.aliyuncs.com/default_avatar.png"
+                alt="avatar"
+                style="width:36px;height:36px;border-radius:50%;
+                        object-fit:cover;border:1px solid #444;" />
+            <!-- 右侧两行文字 -->
+            <div style="line-height:1.2;">
+                <div style="font-size:12px;color:#9ca3af;">已登录：</div>
+                <div style="font-weight:700;font-size:14px;">{u.get("username","")}</div>
+            </div>
+            </div>
+            ''',
+            unsafe_allow_html=True
+        )
+        if st.button("退出登录", key="btn_logout", use_container_width=True):
+            st.session_state.pop("user", None)
+            st.rerun()
+    else:
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Log in", key="btn_login", use_container_width=True):
+                try:
+                    st.switch_page("pages/Auth.py")
+                except Exception:
+                    st.markdown('[前往登录/注册](pages/Auth.py)')
+        with col2:
+            if st.button("Register", key="btn_register", use_container_width=True):
+                try:
+                    st.switch_page("pages/Auth.py")
+                except Exception:
+                    st.markdown('[前往登录/注册](pages/Auth.py)')
+    st.markdown("---")
+
     st.caption("🏗️  Ask questions about building specifications, engineering standards or any construction engineering regulations.")
     st.markdown(
         """
