@@ -394,10 +394,27 @@ def llm_answer(query: str, hits: list[dict], level: str = "标准") -> str:
     return resp.choices[0].message.content.strip()
 # -------------------------------------------------------------------
 
-query = st.text_input("👷‍♂️How can I help you with your construction project today?", "Search: What is BIM? Try it...")
+# ---- 从 Prompt Template 页面带来的预填查询（只初始化一次） ----
+prefill = st.session_state.pop("home_query_prefill", "")  # 读完即删，防止覆盖
+
+# 首次进入本页时，用预填或默认文案初始化输入框的 session 状态
+if "query" not in st.session_state:
+    st.session_state["query"] = prefill or "Search: What is BIM? Try it..."
+
+# 绑定到 session 的输入框（不要再传 value）
+st.text_input(
+    "👷‍♂️How can I help you with your construction project today?",
+    key="query"
+)
+query = st.session_state["query"]
+
+# query = st.text_input("👷‍♂️How can I help you with your construction project today?", "Search: What is BIM? Try it...")
 col_go, col_gpt, col_cfg = st.columns([1, 1, 0.2])
 with col_go:
-    go = st.button("🚀 Go!", type="primary", use_container_width=True)
+    auto_go = bool(prefill) and not st.session_state.get("auto_go_ran")
+    if auto_go:
+        st.session_state["auto_go_ran"] = True
+    go = st.button("🚀 Go!", type="primary", use_container_width=True) or auto_go
 with col_gpt:
     explain_btn = st.button("🧑‍ 让尹老师解读", type="secondary", use_container_width=True)
 with col_cfg:
