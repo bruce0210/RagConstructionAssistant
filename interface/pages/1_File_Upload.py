@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import List, Dict, Any
 from shutil import rmtree
 
+
 import streamlit as st
 import numpy as np
 import pandas as pd  # 用于官方 dataframe 预览
@@ -90,6 +91,63 @@ with st.sidebar:
     force_cpu = st.toggle("FAISS uses CPU only", value=False)
     backup_idx = st.toggle("Back up faiss.index / meta.jsonl to OSS", value=False)
     st.markdown("---")
+    # ---- Divider + Index Stats (just under "Back up ... to OSS") ----
+    def _count_meta(meta_path: str = 'data/index/meta.jsonl'):
+        p = Path(meta_path)
+        docs, total = set(), 0
+        if p.exists():
+            with p.open('r', encoding='utf-8') as f:
+                for line in f:
+                    s = line.strip()
+                    if not s:
+                        continue
+                    total += 1
+                    try:
+                        o = json.loads(s)
+                        h = o.get('doc_hash')
+                        if h:
+                            docs.add(h)
+                    except Exception:
+                        # 忽略坏行
+                        pass
+        return len(docs), total, str(p)
+    _doc_cnt, _item_cnt, _meta_path = _count_meta()
+    
+    # === 缩小侧边栏 metric 的字号 ===
+    st.sidebar.markdown("""
+    <style>
+    /* metric 外层稍微收紧一点 */
+    section[data-testid="stSidebar"] div[data-testid="stMetric"]{
+    padding: .1rem .1rem;
+    }
+
+    /* metric 标题：缩小 + 允许换行（不再省略号）*/
+    section[data-testid="stSidebar"] div[data-testid="stMetricLabel"]{
+    font-size: .80rem !important;      /* 比默认更小 */
+    line-height: 1.15rem !important;
+    white-space: normal !important;     /* 允许换行 */
+    word-break: break-word !important;  /* 长词也能断行 */
+    overflow: visible !important;       /* 取消隐藏 */
+    text-overflow: clip !important;     /* 取消省略号 */
+    }
+
+    /* 数值本身也略小一点 */
+    section[data-testid="stSidebar"] div[data-testid="stMetricValue"]{
+    font-size: 0.9rem !important;
+    line-height: 1.10rem !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    c1, c2 = st.sidebar.columns(2)
+    c1.metric('已传总文档：', f"{_doc_cnt:,} (已去重)")
+    c2.metric('已建总索引：', f"{_item_cnt:,}")
+    # st.sidebar.caption(f'meta: {_meta_path}')
+    # 可选：点一下刷新最新统计
+    if st.sidebar.button('刷新统计', use_container_width=True):
+        st.rerun()
+    st.markdown("---")
+
     st.caption("📄 Upload construction-related documents & Batch DOCX Ingest to JSON.")
     st.markdown(
         """
