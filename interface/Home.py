@@ -1,5 +1,6 @@
 # interface/Home.py
 from __future__ import annotations
+import re
 import os, sys, json
 from pathlib import Path
 from typing import List, Dict, Any
@@ -239,21 +240,62 @@ faiss_path = INDEX_DIR / "faiss.index"
 meta_path  = INDEX_DIR / "meta.jsonl"
 
 # ------------------------- UI 与工具函数 --------------------------
+_STATUS_MAP = {
+    "现行": ("In Force",  "#16a34a"),
+    "废止": ("Obsolete",  "#B22222"),
+}
+# 英文入参也能兼容
+_EN2CN = {
+    "in force": "现行",
+    "active":   "现行",
+    "obsolete": "废止",
+    "withdrawn":"废止",
+}
+
 def _status_badge(status: str) -> str:
-    if status == "现行":
-        color = "#16a34a"
-    elif status == "废止":
-        color = "#B22222"
+    """
+    入参可以是中文(现行/废止)或英文(In Force/Obsolete)。
+    前端统一显示英文，并按规范着色。
+    """
+    cn = status if status in _STATUS_MAP else _EN2CN.get(status.lower(), "")
+    if cn in _STATUS_MAP:
+        label, color = _STATUS_MAP[cn]
     else:
-        color = "#6b7280"
-    return f'<span style="background:{color};color:#fff;padding:2px 8px;border-radius:6px;font-size:12px;">{status}</span>'
+        label, color = (status or "Unknown"), "#6b7280"
+
+    return (
+        f'<span style="background:{color};color:#fff;'
+        f'padding:2px 8px;border-radius:6px;font-size:12px;">{label}</span>'
+    )
+
 
 def _doc_title_and_status(src: str) -> tuple[str, str]:
+    """
+    从文件名中提取标题与状态：
+    - 支持中文“现行/废止”，以及带括号的结尾（如：(...)(现行) / （废止））
+    - 仍兼容原来的“结尾两个字”写法
+    返回的 status 为英文，以便直接用于 UI 显示。
+    """
     name = src.split("_", 1)[-1] if "_" in src else src
     no_ext = name[:-5] if name.lower().endswith(".docx") else name
-    status = no_ext[-2:] if len(no_ext) >= 2 else ""
-    title = no_ext[:-2] if status in ("现行","废止") else no_ext
-    return title, status
+
+    # 1) 优先匹配结尾括号中的状态：(...)(现行)/(废止)
+    m = re.search(r"[（(]?(现行|废止)[)）]?$", no_ext)
+    if m:
+        status_cn = m.group(1)
+        title = re.sub(r"[（(]?(现行|废止)[)）]?$", "", no_ext).rstrip(" -_[]（）()")
+    else:
+        # 2) 回退到原逻辑：结尾两个字
+        tail2 = no_ext[-2:] if len(no_ext) >= 2 else ""
+        if tail2 in ("现行", "废止"):
+            status_cn = tail2
+            title = no_ext[:-2].rstrip(" -_[]（）()")
+        else:
+            status_cn = ""
+            title = no_ext
+
+    status_en = _STATUS_MAP[status_cn][0] if status_cn else ""
+    return title, status_en
 
 def render_clause_text(text: str):
     """把条文正文与“条文说明：”分开展示，并给说明加紫底。"""
@@ -269,7 +311,7 @@ def render_clause_text(text: str):
             f'''
             <div style="margin-top:8px; line-height:1.7;">
               <span style="background:#7c3aed; color:#fff; padding:2px 8px; border-radius:6px; font-size:12px;">
-                条文说明
+                Explanation of the Provisions
               </span>
               <span style="margin-left:.5rem;">{note.strip()}</span>
             </div>
@@ -285,7 +327,7 @@ def render_hits(hits: list[dict]):
     for i, r in enumerate(hits, 1):
         with st.container(border=True):
             similarity = r.get("_score", 0.0) * 100
-            st.markdown(f"**Top {i}** · 语义检索相似度={similarity:.2f}%")
+            st.markdown(f"**Top {i}** · Semantic Similarity={similarity:.2f}%")
             render_clause_text(r.get("text"))
             media = r.get("media") or []
             if isinstance(media, list) and media:
@@ -294,8 +336,8 @@ def render_hits(hits: list[dict]):
             title, status = _doc_title_and_status(r.get("source",""))
             badge = _status_badge(status) if status else ""
             st.markdown("---")
-            st.markdown(f"本条款出自规范：《{title}》", unsafe_allow_html=True)
-            st.markdown(f"该规范当前实施状态：{badge}", unsafe_allow_html=True)
+            st.markdown(f"Source Standard: 《{title}》", unsafe_allow_html=True)
+            st.markdown(f"Status: {badge}", unsafe_allow_html=True)
 
             # Top-K 相关性反馈（与底部边框留出空间）
             qid_for_ui = st.session_state.get("last_query_id")
@@ -306,10 +348,10 @@ def render_hits(hits: list[dict]):
                     <div style="margin:12px 0 8px 0; display:flex; gap:10px;">
                       <a href="./?hit_react=up&qid={qid_for_ui}&clause={cl_no}" target="_self"
                          style="text-decoration:none; background:#065f46; color:#fff;
-                                padding:2px 6px; border-radius:6px; font-size:12px;">👍 相关</a>
+                                padding:2px 6px; border-radius:6px; font-size:12px;">👍 Related</a>
                       <a href="./?hit_react=down&qid={qid_for_ui}&clause={cl_no}" target="_self"
                          style="text-decoration:none; background:#7f1d1d; color:#fff;
-                                padding:2px 6px; border-radius:6px; font-size:12px;">👎 不相关</a>
+                                padding:2px 6px; border-radius:6px; font-size:12px;">👎 Unrelated</a>
                     </div>
                     ''', unsafe_allow_html=True
                 )
@@ -348,12 +390,12 @@ def llm_answer(query: str, hits: list[dict], level: str = "标准") -> str:
             "media": media[:5],
         })
 
-    if level == "敷衍版":
+    if level == "Brief Mode":
         length_hint = "目标长度：约150–250字。"; max_tokens = 350
         structure = ("【结论】一句话回答；\n"
                      "【依据】2–4条，逐条标注（条款号｜规范名全称）；\n"
                      "【注意事项】如有则列出；\n")
-    elif level == "冒烟版":
+    elif level == "Advanced Mode":
         length_hint = "目标长度：约600–900字，拒绝空话套话。"; max_tokens = 950
         structure = ("【结论】先给出明确数值/判断；\n"
                      "【条款释义】解释关键术语与阈值含义；\n"
@@ -399,7 +441,7 @@ prefill = st.session_state.pop("home_query_prefill", "")  # 读完即删，防�
 
 # 首次进入本页时，用预填或默认文案初始化输入框的 session 状态
 if "query" not in st.session_state:
-    st.session_state["query"] = prefill or "Search: What is BIM? Try it..."
+    st.session_state["query"] = prefill or "Search: 'How are fire hazards in production classified?' Try it..."
 
 # 绑定到 session 的输入框（不要再传 value）
 st.text_input(
@@ -416,19 +458,19 @@ with col_go:
         st.session_state["auto_go_ran"] = True
     go = st.button("🚀 Go!", type="primary", use_container_width=True) or auto_go
 with col_gpt:
-    explain_btn = st.button("🧑‍ 让尹老师解读", type="secondary", use_container_width=True)
+    explain_btn = st.button("🧑‍ Let Prof.LLM Explain", type="secondary", use_container_width=True)
 with col_cfg:
     if "detail_level" not in st.session_state:
-        st.session_state.detail_level = "标准版"
+        st.session_state.detail_level = "Standard Mode"
     if hasattr(st, "popover"):
         with st.popover("⚙️"):
             st.session_state.detail_level = st.radio(
-                "选择解读深度", ["敷衍版", "标准版", "冒烟版"], index=["敷衍版","标准版","冒烟版"].index(st.session_state.detail_level)
+                "Choose the depth of interpretation", ["Brief Mode", "Standard Mode", "Advanced Mode"], index=["Brief Mode","Standard Mode","Advanced Mode"].index(st.session_state.detail_level)
             )
     else:
         with st.expander("⚙️"):
             st.session_state.detail_level = st.radio(
-                "选择解读深度", ["敷衍版", "标准版", "冒烟版"], index=["敷衍版","标准版","冒烟版"].index(st.session_state.detail_level)
+                "Choose the depth of interpretation", ["Brief Mode", "Standard Mode", "Advanced Mode"], index=["Brief Mode","Standard Mode","Advanced Mode"].index(st.session_state.detail_level)
             )
 # —— 固定“解读”spinner 的位置（输入框下方）
 explain_spinner_slot = st.empty()
@@ -466,9 +508,9 @@ if go and query.strip():
     st.session_state["last_hits"] = filtered_hits
 
     if not hits:
-        st.info("啊哦...没有检索到结果（请尝试换个问法~）")
+        st.info("Oh... No results were found (Please try rephrasing your question~)")
     elif not filtered_hits:
-        st.info("语义相似度太低，请换个问法")
+        st.info("The semantic similarity is too low... Please try a different way of asking~")
     else:
         render_hits(filtered_hits)
 
@@ -479,7 +521,7 @@ elif st.session_state.get("last_hits"):
 # —— 解读：spinner 出现在输入框下方（通过占位容器）——
 if explain_btn and query.strip():
     with explain_spinner_slot.container():
-        with st.spinner("尹老师正在拼命解读…"):
+        with st.spinner("Searching..."):
             hits_for_llm = st.session_state.get("last_hits")
             if not hits_for_llm:
                 raw_hits = search(query.strip(), topk)
@@ -514,15 +556,15 @@ if explain_btn and query.strip():
                     st.session_state.last_answer_id = aid
 
                 except Exception as e:
-                    st.error(f"召唤尹老师失败，已帮你Call他了，一会就回来~：{e}")
+                    st.error(f"The engineer is currently making the necessary repairs and will finish soon.：{e}")
             else:
-                st.warning("语义相似度太低，请换个问法")
+                st.warning("The semantic similarity is too low... Please try a different way of asking~")
     # 解读结束后清掉 spinner
     explain_spinner_slot.empty()
 
 # ---- 弹窗（顶层 DOM 注入，固定在页面中间；无缩进，避免被 Markdown 当作代码块） ----
 if st.session_state.get("show_explanation", False):
-    if st.button("❌ 关闭解读窗口", key="close_explain_top"):
+    if st.button("❌ Close", key="close_explain_top"):
         st.session_state.show_explanation = False
         st.stop()
 
@@ -541,10 +583,10 @@ if st.session_state.get("show_explanation", False):
             f'<div style="margin-top:12px;display:flex;gap:12px;">'
             f'  <a href="./?react=up&aid={aid_for_ui}" target="_self" '
             f'     style="text-decoration:none;background:#065f46;color:#fff;padding:4px 8px;'
-            f'            border-radius:8px;font-size:13px;">👍 有帮助</a>'
+            f'            border-radius:8px;font-size:13px;">👍 Helpful</a>'
             f'  <a href="./?react=down&aid={aid_for_ui}" target="_self" '
             f'     style="text-decoration:none;background:#7f1d1d;color:#fff;padding:4px 8px;'
-            f'            border-radius:8px;font-size:13px;">👎 不太准</a>'
+            f'            border-radius:8px;font-size:13px;">👎 Unhelpful</a>'
             f'</div>'
         )
 
@@ -558,13 +600,13 @@ if st.session_state.get("show_explanation", False):
         '     style="position:absolute;top:8px;right:12px;text-decoration:none;'
         '            background:#374151;color:#fff;padding:2px 8px;border-radius:8px;'
         '            font-weight:700;line-height:1;">×</a>'
-        '  <h3 style="color:#00BFFF;margin:0 0 12px 0;">📘 来自尹老师的解读</h3>'
+        '  <h3 style="color:#00BFFF;margin:0 0 12px 0;">📘 Explanation from the Prof.LLM </h3>'
         f' <div style="color:white;font-size:15px;line-height:1.7;">{ex_html}</div>'
         f' {btns_html}'
         '</div>'
     )
     st.markdown(modal_html, unsafe_allow_html=True)
 
-    if st.button("关闭", key="close_explain_bottom"):
+    if st.button("Close", key="close_explain_bottom"):
         st.session_state.show_explanation = False
         st.experimental_rerun()
