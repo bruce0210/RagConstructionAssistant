@@ -41,3 +41,34 @@ data/media/         # The parsed picture
 *.bak
 *.bak_*
 *.bak_pathfix*
+
+# --- policy: only track *.py under /data and /experiments ---
+/data/**
+/experiments/**
+
+!/data/**/*.py
+!/experiments/**/*.py
+
+# also ignore common secrets explicitly
+*.env
+.env*
+*key*
+*secret*
+*token*
+
+# --- policy v2: only track *.py under /data and /experiments ---
+/data/*
+/experiments/*
+
+# unignore directories so git can descend
+!/data/**/
+!/experiments/**/
+
+# allow python files
+!/data/**/*.py
+!/experiments/**/*.py
+
+# local artifacts
+.tmp_uploads/
+*.tar.gz
+*_tree.txt
