@@ -630,6 +630,12 @@ except Exception:
 
 # 点击按钮：重新跑一次 MA（使用当前输入框 query）
 if _ma_clicked:
+    # --- [MA][DB] scheme A: dedicated query_id for this MA run ---
+    user_id = (st.session_state.get("user") or {}).get("id")
+    ma_model_name = f"{model_name}+MA" if "+MA" not in str(model_name) else str(model_name)
+    ma_qid = start_query(user_id, query.strip(), 50, ma_model_name, page="home")
+    st.session_state.ma_query_id = ma_qid
+    ma_t0 = time.perf_counter()
     st.session_state.ma_show = True
     st.session_state.ma_error = ""
     st.session_state.ma_result = None
@@ -665,8 +671,43 @@ if _ma_clicked:
 
                 ma_out = run_ma_for_ui(query.strip(), hits_for_ma, llm_ma_dir=llm_ma_dir, candidates_topn=50)
                 st.session_state.ma_result = ma_out
+
+                # --- [MA][DB] persist final answer + evidence into PGSQL ---
+                try:
+                    _final = (ma_out or {}).get("final") or {}
+                    _final_answer = _final.get("final_answer") or ""
+                    _final_clause_ids = _final.get("final_clause_ids") or []
+                    _ev = (ma_out or {}).get("evidence_bundle") or {}
+                    if isinstance(_ev, dict):
+                        _ev.setdefault("triggered", (ma_out or {}).get("triggered"))
+                        _ev.setdefault("used_models", (ma_out or {}).get("used_models"))
+                    # normalize to JSON-serializable primitives (telemetry.save_answer uses json.dumps)
+                    _ev = json.loads(json.dumps(_ev, ensure_ascii=False, default=str))
+                    st.session_state.ma_answer_id = save_answer(ma_qid, _final_answer, _ev)
+
+                    _top_hits = [str(x).strip() for x in (_final_clause_ids or []) if str(x).strip()]
+                    if not _top_hits:
+                        _top_hits = [str((r.get("clause_no") or r.get("clause_id") or "")).strip() for r in (hits_for_ma or [])]
+                        _top_hits = [x for x in _top_hits if x]
+                    finish_query(
+                        ma_qid,
+                        n_hits=len(hits_for_ma or []),
+                        latency_ms=int((time.perf_counter() - ma_t0) * 1000),
+                        top_clause_nos=_top_hits,
+                    )
+                except Exception as _db_e:
+                    st.session_state.ma_error = (st.session_state.ma_error + f" | DB persist failed: {_db_e}").strip(" |")
             except Exception as e:
                 st.session_state.ma_error = str(e)
+                try:
+                    finish_query(
+                        ma_qid,
+                        n_hits=0,
+                        latency_ms=int((time.perf_counter() - ma_t0) * 1000),
+                        top_clause_nos=[],
+                    )
+                except Exception:
+                    pass
 
     ma_spinner_slot.empty()
 
