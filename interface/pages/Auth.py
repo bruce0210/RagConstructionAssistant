@@ -32,8 +32,8 @@ except Exception:
     get_user_agent = None
 
 # --------------------------- 页面设置 ---------------------------
-st.set_page_config(page_title="登录 / 注册", page_icon="🔐", layout="centered")
-st.title("🔐 登录 / 注册")
+st.set_page_config(page_title="Log in / Register", page_icon="🔐", layout="centered")
+st.title("🔐 Log in / Register")
 
 # 轻微压缩副标题与表单的间距，去掉空白感
 st.markdown("""
@@ -41,6 +41,16 @@ st.markdown("""
 section.main h2, section.main .stSubheader { margin-bottom: 0.5rem !important; }
 </style>
 """, unsafe_allow_html=True)
+
+with st.sidebar:
+    st.caption("🔐 Log in & Register.")
+    st.markdown(
+        """
+        <a href="https://github.com/bruce0210/rag_construction_assistant" target="_blank">
+            <img src="https://github.com/codespaces/badge.svg" alt="Open in GitHub">
+        </a>
+        """, unsafe_allow_html=True,
+    )
 
 # --------------------------- 数据库连接 -------------------------
 def get_conn():
@@ -119,7 +129,7 @@ def fetch_geo_by_ip(ip: str):
         return {"ip": ip, "country": None, "region": None, "city": None}
 
 def fetch_ip_geo():
-    """兜底：不指定 IP 的查询（会得到服务器出口 IP 的地理信息）"""
+    """不指定 IP 的查询（得到服务器出口 IP 的地理信息）"""
     try:
         import requests
         j = requests.get("https://ipapi.co/json/", timeout=3).json()
@@ -245,29 +255,29 @@ def log_login_event(user_id, success: bool, ip=None, ua=None, country=None, regi
         conn.commit()
 
 # ---------------------------- UI ----------------------------
-tab_login, tab_register = st.tabs(["登录", "注册"])
+tab_login, tab_register = st.tabs(["Log in", "Register"])
 
 with tab_register:
-    st.subheader("创建账户")
-    r_username = st.text_input("用户名（3-32，字母开始，仅含字母/数字/下划线/连字符）", key="r_user")
-    r_email    = st.text_input("邮箱", key="r_mail")
-    r_pwd      = st.text_input("密码（至少 8 位）", type="password", key="r_pwd")
-    r_pwd2     = st.text_input("重复密码", type="password", key="r_pwd2")
-    agree      = st.checkbox("我已阅读并同意《用户协议》", value=True, key="r_agree")
+    st.subheader("Create Account")
+    r_username = st.text_input("Username (3-32, starts with a letter, contains only letters/numbers/underscores/hyphens).", key="r_user")
+    r_email    = st.text_input("Email", key="r_mail")
+    r_pwd      = st.text_input("Password (at least 8 characters)", type="password", key="r_pwd")
+    r_pwd2     = st.text_input("Confirm Password", type="password", key="r_pwd2")
+    agree      = st.checkbox("I have read and agree to the User Agreement.", value=True, key="r_agree")
 
-    if st.button("注册", type="primary", use_container_width=True, key="btn_register"):
+    if st.button("Register", type="primary", use_container_width=True, key="btn_register"):
         if not valid_username(r_username):
-            st.error("用户名格式不正确，请重新输入。")
+            st.error("Username format is incorrect, please re-enter.")
         elif not valid_email(r_email):
-            st.error("邮箱格式不正确。")
+            st.error("Email format is incorrect.")
         elif r_pwd != r_pwd2 or len(r_pwd) < 8:
-            st.error("两次密码不一致，或密码长度不足 8 位。")
+            st.error("Passwords do not match, or password length is less than 8 characters.")
         elif username_exists(r_username):
-            st.error("该用户名已存在。")
+            st.error("This username already exists.")
         elif email_exists(r_email):
-            st.error("该邮箱已被注册。")
+            st.error("This email address has already been registered.")
         elif not agree:
-            st.error("请先勾选同意《用户协议》。")
+            st.error("Please check the box to agree to the User Agreement first.")
         else:
             pwd_hash = ph.hash(r_pwd) # Argon2 加密
             user = create_user(r_username, r_email, pwd_hash)
@@ -276,22 +286,22 @@ with tab_register:
                 "username": user["username"],
                 "email": user["email"],
             }
-            st.success("注册成功，正在跳转到首页…")
+            st.success("Registration successful, redirecting to the homepage~")
             st.balloons()
             time.sleep(2)
             try:
                 st.switch_page("Home.py") # 直接跳回首页
             except Exception:
-                st.markdown("[返回首页](../Home.py)") # 兼容旧版
+                st.markdown("[Return to homepage](../Home.py)") # 兼容旧版
 
 with tab_login:
-    st.subheader("账户登录")
+    st.subheader("Account Login")
 
-    l_login = st.text_input("用户名或邮箱", key="l_login")
-    l_pwd   = st.text_input("密码", type="password", key="l_pwd")
+    l_login = st.text_input("Username or Email address", key="l_login")
+    l_pwd   = st.text_input("Password", type="password", key="l_pwd")
     col1, col2 = st.columns([1,1])
-    remember = col1.checkbox("记住我", value=True, key="l_remember")
-    btn = col2.button("登录", type="primary", use_container_width=True, key="btn_login")
+    remember = col1.checkbox("Remember me", value=True, key="l_remember")
+    btn = col2.button("Log in", type="primary", use_container_width=True, key="btn_login")
 
     if btn:
         user = fetch_user_by_login(l_login)
@@ -316,7 +326,7 @@ with tab_login:
         city    = geo.get("city")
 
         if not user:
-            st.error("账户不存在，请重试~")
+            st.error("Account does not exist, please register first~")
         else:
             try:
                 ph.verify(user["password_hash"], l_pwd)
@@ -331,20 +341,20 @@ with tab_login:
                     "username": user["username"],
                     "email": user["email"],
                 }
-                st.success("登录成功，正在跳转到首页~")
+                st.success("Login successful, redirecting to the homepage~")
                 st.balloons()
                 time.sleep(2)
                 try:
                     st.switch_page("Home.py")
                 except Exception:
-                    st.markdown("[返回首页](../Home.py)")
+                    st.markdown("[Return to homepage](../Home.py)")
             except VerifyMismatchError:
                 # 失败登录也写入（含 IP/地区）
                 log_login_event(
                     user["id"], False,
                     ip=ip, ua=ua, country=country, region=region, city=city
                 )
-                st.error("密码错误，请重试~")
+                st.error("Incorrect password, please try again.~")
 
 # 底部补充说明（可删除）
-st.caption("提示：登录成功后，可在侧栏看到“已登录：用户名”。如需退出，请在侧栏点击“退出登录”。")
+st.caption("Note: After successful login, you can see your Username in the sidebar. To log out, please click Logout button.")

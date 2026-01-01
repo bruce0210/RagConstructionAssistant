@@ -104,7 +104,7 @@ try:
         user_id = (st.session_state.get("user") or {}).get("id")
         set_reaction(aid_val, user_id, 1 if up else -1)
         qp2.clear()
-        st.toast("已记录：👍 有帮助" if up else "已记录：👎 不太准")
+        st.toast("已记录：👍 Helpful" if up else "已记录：👎 Unhelpful")
 except Exception:
     pass
 
@@ -425,7 +425,7 @@ def llm_answer(query: str, hits: list[dict], level: str = "标准") -> str:
     client = OpenAI(api_key=st.secrets["openai"]["api_key"])
     payload = {"query": query, "hits": ctx_blocks}
     resp = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-4o",
         temperature=0.2,
         max_tokens=max_tokens,
         messages=[

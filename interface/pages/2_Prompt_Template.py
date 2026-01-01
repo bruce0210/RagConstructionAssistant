@@ -4,13 +4,13 @@ from datetime import datetime
 import streamlit as st
 import psycopg2, psycopg2.extras
 
-# ---------------- 页面配置（单列 + 中英双语文案） ----------------
-st.set_page_config(page_title="Prompt Template / 提示词工具", page_icon="🧭", layout="centered")
+# ---------------- 页面配置 ----------------
+st.set_page_config(page_title="Prompt Template", page_icon="🧭", layout="centered")
 st.title("🧭 Prompt Template")
-st.caption("Build and test customized prompt templates for construction queries. | 构建并测试用于建筑规范查询的提示词模板。")
+st.caption("Build and test customized prompt templates for construction queries.")
 
 with st.sidebar:
-    st.caption("🧭 Explore and customize prompt templates. | 探索和定制提示词模板。")
+    st.caption("🧭 Explore and customize prompt templates.")
     st.markdown(
         """
         <a href="https://github.com/bruce0210/rag_construction_assistant" target="_blank">
