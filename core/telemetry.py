@@ -24,6 +24,10 @@ def _get_conn():
         raise RuntimeError("未配置数据库连接。请设置 [postgres].dsn 或环境变量 DATABASE_URL")
     return psycopg2.connect(dsn)
 
+def _jsonb(obj: Any):
+    # Ensure non-ASCII chars are kept (Chinese), and store as JSONB
+    return psycopg2.extras.Json(obj, dumps=lambda x: json.dumps(x, ensure_ascii=False))
+
 def ensure_schema():
     """
     仅创建“首页查询落库”所需最小三表：
@@ -46,14 +50,14 @@ def ensure_schema():
         finished_at TIMESTAMPTZ,
         latency_ms  INTEGER,
         n_hits      INT,
-        top_hits    JSONB   -- 仅存命中条款编号数组，不存任何原文
+        top_hits    JSONB
     );
 
     CREATE TABLE IF NOT EXISTS app.search_answers (
         id           BIGSERIAL PRIMARY KEY,
         query_id     BIGINT NOT NULL REFERENCES app.search_queries(id) ON DELETE CASCADE,
         answer_text  TEXT NOT NULL,
-        evidence     JSONB,  -- 这里也不放全文，只放必要摘要
+        evidence     JSONB,
         created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
     );
 
@@ -66,7 +70,6 @@ def ensure_schema():
         UNIQUE (answer_id, user_id)
     );
 
-    -- 每个 Top-K 命中的条款相关性反馈（只按条款号记录，不存原文）
     CREATE TABLE IF NOT EXISTS app.hit_reactions (
         id         BIGSERIAL PRIMARY KEY,
         query_id   BIGINT NOT NULL REFERENCES app.search_queries(id) ON DELETE CASCADE,
@@ -77,7 +80,6 @@ def ensure_schema():
         UNIQUE (query_id, clause_no, user_id)
     );
     """
-    # 兼容已建表后新增 top_hits 字段
     alter = "ALTER TABLE app.search_queries ADD COLUMN IF NOT EXISTS top_hits JSONB;"
     with _get_conn() as conn, conn.cursor() as cur:
         cur.execute(ddl)
@@ -100,7 +102,7 @@ def start_query(user_id: Optional[str], query_text: str, topk: int, model_name: 
 def finish_query(query_id: int, n_hits: int, latency_ms: Optional[int],
                  top_clause_nos: Optional[List[str]] = None) -> None:
     """
-    top_clause_nos: 仅传 Top-K 的条款编号列表（如 ["6.4.3", "5.2.1", ...]），不存任何原文。
+    top_clause_nos: 仅传 Top-K 的条款编号列表（如 ["6.4.3", "5.2.1", ...]）。
     """
     sql = """
     UPDATE app.search_queries
@@ -110,23 +112,37 @@ def finish_query(query_id: int, n_hits: int, latency_ms: Optional[int],
            top_hits = %s
      WHERE id = %s
     """
-    top_hits_json = json.dumps(top_clause_nos or [], ensure_ascii=False)
+    top_hits_payload = _jsonb(top_clause_nos or [])
     with _get_conn() as conn, conn.cursor() as cur:
-        cur.execute(sql, (n_hits, latency_ms, top_hits_json, query_id))
+        cur.execute(sql, (n_hits, latency_ms, top_hits_payload, query_id))
         conn.commit()
 
 def save_answer(query_id: int, answer_text: str, evidence: Optional[Dict[str, Any]] = None) -> int:
     """
-    evidence 也避免存全文；只放必要的编号/分数等元数据。
+    保存一条回答及 evidence(JSONB)。兼容旧调用：evidence 若传入字符串，会尝试 json.loads。
     """
-    ev_json = json.dumps(evidence, ensure_ascii=False) if evidence is not None else None
+    ev_payload = None
+    if evidence is not None:
+        if isinstance(evidence, (dict, list)):
+            ev_payload = _jsonb(evidence)
+        elif isinstance(evidence, str):
+            # try parse string -> json
+            try:
+                obj = json.loads(evidence)
+                ev_payload = _jsonb(obj)
+            except Exception:
+                # store as raw string
+                ev_payload = _jsonb({"raw": evidence})
+        else:
+            ev_payload = _jsonb({"raw": str(evidence)})
+
     sql = """
     INSERT INTO app.search_answers (query_id, answer_text, evidence)
     VALUES (%s, %s, %s)
     RETURNING id
     """
     with _get_conn() as conn, conn.cursor() as cur:
-        cur.execute(sql, (query_id, answer_text, ev_json))
+        cur.execute(sql, (query_id, answer_text, ev_payload))
         aid = cur.fetchone()[0]
         conn.commit()
         return aid
