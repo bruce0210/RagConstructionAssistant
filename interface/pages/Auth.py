@@ -185,8 +185,12 @@ RESERVED = {"admin", "root", "system", "null", "none", "select", "insert", "dele
 def valid_username(name: str) -> bool:
     return bool(USERNAME_RE.match(name or "")) and name.lower() not in RESERVED
 
+# def valid_email(email: str) -> bool:
+#     return bool(re.match(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$", email or ""))
+EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 def valid_email(email: str) -> bool:
-    return bool(re.match(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$", email or ""))
+    return bool(EMAIL_RE.fullmatch((email or "").strip()))
+
 
 ph = PasswordHasher()  # Argon2id，默认参数安全
 
