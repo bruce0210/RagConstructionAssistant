@@ -13,6 +13,30 @@ from streamlit_cookies_manager import EncryptedCookieManager
 from streamlit.components.v1 import html as st_html
 
 # ------------------ 轻量路径配置（避免导入重模块） ------------------
+
+st.markdown("""
+<style>
+/* ma_ui_css_v2 */
+
+/* MA button warm color (orange) */
+button[title="Multi-agent Arbitration"] {
+  background: linear-gradient(90deg, #ff9f1c, #ffbf69) !important;
+  color: #1b1b1b !important;
+  border: 1px solid rgba(255,255,255,0.18) !important;
+}
+button[title="Multi-agent Arbitration"]:hover {
+  filter: brightness(1.03);
+}
+
+/* Close button smaller to match caption */
+button[title="Close MA panel"] {
+  padding: 0.18rem 0.55rem !important;
+  font-size: 0.86rem !important;
+  line-height: 1.1 !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INDEX_DIR  = REPO_ROOT / "data" / "index"
 
@@ -30,6 +54,8 @@ from telemetry import (
     start_query, finish_query,
     save_answer, set_reaction,
 )
+
+from ma_arbitration import run_ma_for_ui, default_llm_ma_dir
 set_hit_reaction = getattr(_telemetry, "set_hit_reaction", lambda *args, **kwargs: None)
 
 log_ensure()  # 建表（存在则跳过）
@@ -120,7 +146,7 @@ try:
         user_id = (st.session_state.get("user") or {}).get("id")
         set_hit_reaction(qid_val, clause_val, user_id, 1 if hr in ("up", ["up"]) else -1)
         qp3.clear()
-        st.toast("已记录该条款的相关性反馈~")
+        st.toast("Feedback regarding the relevance of this clause has been recorded~")
 except Exception:
     pass
 
@@ -179,7 +205,7 @@ with st.sidebar:
                      alt="avatar"
                      style="width:36px;height:36px;border-radius:50%;object-fit:cover;border:3px solid #444;" />
                 <div style="line-height:1.2;">
-                  <div style="font-size:15px;color:#9ca3af;">已登录：</div>
+                  <div style="font-size:15px;color:#9ca3af;">Logged in：</div>
                   <div style="font-weight:700;font-size:15px;">{u.get("username","")}</div>
                 </div>
               </div>
@@ -187,7 +213,7 @@ with st.sidebar:
             ''', unsafe_allow_html=True
         )
 
-        if st.button("退出登录", key="btn_logout", use_container_width=True):
+        if st.button("Log out", key="btn_logout", use_container_width=True):
             # 1) 清 session
             st.session_state.pop("user", None)
             # 2) 立刻清 cookie（在侧栏内就执行，确保下一次 rerun 不会被自动恢复）
@@ -298,7 +324,7 @@ def _doc_title_and_status(src: str) -> tuple[str, str]:
     return title, status_en
 
 def render_clause_text(text: str):
-    """把条文正文与“条文说明：”分开展示，并给说明加紫底。"""
+    """把条文正文与“条文说明：”分开展示，并给说明加紫色底。"""
     if not text:
         return
     import re
@@ -448,10 +474,11 @@ st.text_input(
     "👷‍♂️How can I help you with your construction project today?",
     key="query"
 )
+
 query = st.session_state["query"]
 
 # query = st.text_input("👷‍♂️How can I help you with your construction project today?", "Search: What is BIM? Try it...")
-col_go, col_gpt, col_cfg = st.columns([1, 1, 0.2])
+col_go, col_gpt, col_cfg, col_ma = st.columns([0.8, 0.85, 0.3, 0.9])
 with col_go:
     auto_go = bool(prefill) and not st.session_state.get("auto_go_ran")
     if auto_go:
@@ -472,8 +499,12 @@ with col_cfg:
             st.session_state.detail_level = st.radio(
                 "Choose the depth of interpretation", ["Brief Mode", "Standard Mode", "Advanced Mode"], index=["Brief Mode","Standard Mode","Advanced Mode"].index(st.session_state.detail_level)
             )
+with col_ma:
+        ma_btn = st.button("🧩 Multi-agent Arbitration", type="secondary", use_container_width=True)
+ma_panel_slot = st.container()  # MA panel fixed under buttons
 # —— 固定“解读”spinner 的位置（输入框下方）
 explain_spinner_slot = st.empty()
+ma_spinner_slot = st.empty()
 
 if "show_explanation" not in st.session_state:
     st.session_state.show_explanation = False
@@ -483,6 +514,14 @@ if "last_query_id" not in st.session_state:
     st.session_state.last_query_id = None
 if "last_answer_id" not in st.session_state:
     st.session_state.last_answer_id = None
+if "ma_show" not in st.session_state:
+    st.session_state.ma_show = False
+if "ma_result" not in st.session_state:
+    st.session_state.ma_result = None
+if "ma_error" not in st.session_state:
+    st.session_state.ma_error = ""
+if "ma_answer_id" not in st.session_state:
+    st.session_state.ma_answer_id = None
 
 if go and query.strip():
     user_id = (st.session_state.get("user") or {}).get("id")
@@ -521,6 +560,8 @@ elif st.session_state.get("last_hits"):
 # —— 解读：spinner 出现在输入框下方（通过占位容器）——
 if explain_btn and query.strip():
     with explain_spinner_slot.container():
+        prof_llm_slot = st.empty()
+        # prof_llm_slot.info("Prof.LLM: Searching...")
         with st.spinner("Searching..."):
             hits_for_llm = st.session_state.get("last_hits")
             if not hits_for_llm:
@@ -559,8 +600,123 @@ if explain_btn and query.strip():
                     st.error(f"The engineer is currently making the necessary repairs and will finish soon.：{e}")
             else:
                 st.warning("The semantic similarity is too low... Please try a different way of asking~")
+        prof_llm_slot.empty()
     # 解读结束后清掉 spinner
     explain_spinner_slot.empty()
+
+
+
+
+
+# —— 多智能体仲裁（展示 6 专家 + 仲裁；本阶段先不落库）——
+if "ma_show" not in st.session_state:
+    st.session_state.ma_show = False
+if "ma_result" not in st.session_state:
+    st.session_state.ma_result = None
+if "ma_error" not in st.session_state:
+    st.session_state.ma_error = ""
+
+# 固定展示位置（按钮下方）
+if "ma_panel_slot" not in globals():
+    ma_panel_slot = st.container()
+if "ma_spinner_slot" not in globals():
+    ma_spinner_slot = st.empty()
+
+# ma_btn 可能在某些分支未定义，这里做保护
+try:
+    _ma_clicked = bool(ma_btn) and bool(query.strip())
+except Exception:
+    _ma_clicked = False
+
+# 点击按钮：重新跑一次 MA（使用当前输入框 query）
+if _ma_clicked:
+    st.session_state.ma_show = True
+    st.session_state.ma_error = ""
+    st.session_state.ma_result = None
+
+    with ma_spinner_slot.container():
+        with st.spinner("Running multi-agent arbitration..."):
+            try:
+                hits_for_ma = search(query.strip(), 50)  # 后端默认 Top 50 candidates
+                if not hits_for_ma:
+                    raise RuntimeError("No candidates were found. Please try rephrasing your question.")
+                llm_ma_dir = default_llm_ma_dir(REPO_ROOT)
+# [MA] load env.sh
+                # Load API keys into current Streamlit process (strip quotes)
+                import os
+                from pathlib import Path as _Path
+                _env_sh = _Path(llm_ma_dir) / "configs" / "env.sh"
+                import os
+                os.environ.setdefault("DASHSCOPE_BASE_URL", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
+                if _env_sh.exists():
+                    for _raw in _env_sh.read_text(encoding="utf-8", errors="ignore").splitlines():
+                        _line = _raw.strip()
+                        if (not _line) or _line.startswith("#"):
+                            continue
+                        if _line.startswith("export "):
+                            _line = _line[len("export "):].strip()
+                        if "=" not in _line:
+                            continue
+                        _k, _v = _line.split("=", 1)
+                        _k = _k.strip()
+                        _v = _v.strip().strip('"').strip("'").strip()
+                        if _k:
+                            os.environ[_k] = _v
+
+                ma_out = run_ma_for_ui(query.strip(), hits_for_ma, llm_ma_dir=llm_ma_dir, candidates_topn=50)
+                st.session_state.ma_result = ma_out
+            except Exception as e:
+                st.session_state.ma_error = str(e)
+
+    ma_spinner_slot.empty()
+
+# 展示面板：6 专家辩论 + 仲裁
+if st.session_state.get("ma_show", False):
+    with ma_panel_slot:
+        with st.expander("🧩 Multi-agent Arbitration (Debate + Arbitration)", expanded=True):
+            col_close, col_note = st.columns([2, 10])
+            with col_close:
+                if st.button("❌ Close", key="ma_close_panel", help="Close MA panel"):
+                    st.session_state.ma_show = False
+                    st.session_state.ma_result = None
+                    st.session_state.ma_error = ""
+            with col_note:
+                st.caption("Experts Model: Qwen-max (6 agents) · Arbiter Model: OpenAI (GPT-4o)")
+
+            if st.session_state.get("ma_error"):
+                st.error(st.session_state.ma_error)
+            elif not st.session_state.get("ma_result"):
+                st.info("Click the MA button to run arbitration.")
+            else:
+                ma_out = st.session_state.ma_result or {}
+                diag = ma_out.get("trigger_diag") or {}
+                triggered = bool(ma_out.get("triggered", False))
+
+                st.markdown(f"**Arbiter triggered:** `{triggered}`")
+                if diag.get("trigger_reasons"):
+                    st.markdown("**Trigger reasons:** " + ", ".join(diag.get("trigger_reasons", [])))
+
+                final = ma_out.get("final") or {}
+                st.markdown("## ✅ Final Decision")
+                if final.get("final_answer"):
+                    st.success(final["final_answer"])
+                else:
+                    st.json(final)
+                tabs = st.tabs(["arch", "struct", "plumb", "hvac", "elec", "fire", "final_json"])
+                expert_list = ma_out.get("experts") or []
+                expert_by = {e.get("agent_id"): e for e in expert_list if isinstance(e, dict) and e.get("agent_id")}
+                order = ["arch", "struct", "plumb", "hvac", "elec", "fire"]
+
+                for tab, aid in zip(tabs[:6], order):
+                    with tab:
+                        obj = expert_by.get(aid)
+                        if not obj:
+                            st.info("No output.")
+                        else:
+                            st.json(obj)
+
+                with tabs[6]:
+                    st.json(final)
 
 # ---- 弹窗（顶层 DOM 注入，固定在页面中间；无缩进，避免被 Markdown 当作代码块） ----
 if st.session_state.get("show_explanation", False):
