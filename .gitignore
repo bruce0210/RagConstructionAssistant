@@ -31,3 +31,13 @@ data/media/         # The parsed picture
 .tmp_uploads/       # Temporary storage of front-end uploads
 **/*.docx           # Docx accidentally left in the warehouse
 **/*.doc            # Same as above, to avoid miscommunication of Word files
+
+# local backups
+*.bak
+*.bak_*
+*.bak_pathfix*
+
+# local backup files
+*.bak
+*.bak_*
+*.bak_pathfix*
